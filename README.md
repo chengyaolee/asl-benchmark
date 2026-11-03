@@ -8,6 +8,48 @@ The same clip is scored two ways. Landmarks feed four pose models; raw frames fe
 
 **CS298A** · Narelle Ho, Cheng Yao Lee
 
+## Setup
+
+The loader reads two datasets, both cached under `data/` (gitignored):
+
+| Source | What `load` fetches | What each sample carries |
+| --- | --- | --- |
+| `wlasl100` | WLASL100 metadata from the [WLASL](https://github.com/dxli94/WLASL) repo: 2,038 clips, 100 signs, official train/val/test split | A video path plus the frame span. The file itself is downloaded separately. |
+| `google_islr` | [Google Isolated Sign Language Recognition](https://www.kaggle.com/competitions/asl-signs) (`asl-signs` on Kaggle): 94,481 sequences, 250 signs, MediaPipe Holistic landmarks | A parquet of 543 landmarks `(x, y, z)` per frame. No video. |
+
+```bash
+pip install -r requirements.txt
+```
+
+```python
+from asl_benchmark import load, load_landmarks, download_videos
+
+wlasl = load("wlasl100")    # metadata only, into data/wlasl100
+google = load("google_islr")  # full archive, into data/google_islr
+
+train = wlasl.split("train")  # also "val" and "test"
+saved, failed = download_videos(wlasl)  # raw clips; failed is dead urls
+
+sequence = load_landmarks(google.split("train")[0])  # (frames, 543, 3)
+```
+
+WLASL video links are a mix of direct files and YouTube. YouTube clips need `yt-dlp` on `PATH`. `download_videos` keeps going when a url is dead and returns those ids in `failed`.
+
+Google ISLR is only published on Kaggle, about 40 GB zipped. Download it with the API. `kaggle` is installed with the requirements above. A Kaggle account is required.
+
+1. Accept the rules at [kaggle.com/competitions/asl-signs/rules](https://www.kaggle.com/competitions/asl-signs/rules) while logged in as the account that will create the token. Until that account has accepted, the download returns 403: "You must accept this competition's rules before you'll be able to download files."
+2. On [kaggle.com/settings](https://www.kaggle.com/settings), choose **Create New Token**. Copy the token value. It starts with `KGAT`.
+3. Copy the example and put that token in `KAGGLE_API_TOKEN`. `.env` is gitignored. `python3 load_data.py` reads it, so the variables do not need to be exported first.
+
+```bash
+cp .env.example .env
+python3 load_data.py
+```
+
+`load("google_islr")` downloads the archive into `data/google_islr` and unpacks it.
+
+If the zip is already on disk, unzip it so `train.csv`, `sign_to_prediction_index_map.json`, and `train_landmark_files/` sit under `data/google_islr`. The loader then skips Kaggle. The public release has no val/test split. The loader holds out signers with a fixed 80/10/10 cut, so the same participant never appears in two splits. Landmark columns are face, left hand, pose, then right hand. Missing points are NaN.
+
 ## Overview
 
 More than 70 million deaf people use a sign language, and most speech and captioning tools still assume a spoken utterance. Isolated-word recognition is a narrow, measurable version of that gap. The signer performs one sign, and the system names it.

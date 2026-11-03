@@ -3,9 +3,10 @@
 Both sources come back as the same Sample records, so later models can
 iterate either dataset without knowing which files it was built from.
 
-WLASL100 is raw RGB video plus the official 100-gloss split. The clip
-window is the WLASL frame span (25 fps, frame_start is 1-based, frame_end
-of -1 means the last frame). Google ISLR is precomputed MediaPipe Holistic
+WLASL100 is the first 100 glosses of WLASL_v0.3.json, each instance
+keeping the split recorded in that file. The clip window is the WLASL
+frame span (25 fps, frame_start is 1-based, frame_end of -1 means the last
+frame). Google ISLR is precomputed MediaPipe Holistic
 landmarks, 543 points by (x, y, z) per frame, and has no video.
 
 Usage:
@@ -21,8 +22,10 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import shutil
 import subprocess
+import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
@@ -31,16 +34,12 @@ from pathlib import Path
 
 SOURCES = ("wlasl100", "google_islr")
 
-# Official WLASL start kit. The 100-gloss subset is nslt_100.json.
+# Official WLASL start kit. The file is ordered by gloss frequency.
+# WLASL100 is the first 100 entries.
 WLASL_JSON_URL = (
     "https://raw.githubusercontent.com/dxli94/WLASL/master/start_kit/WLASL_v0.3.json"
 )
-WLASL_SPLIT_URL = (
-    "https://raw.githubusercontent.com/dxli94/WLASL/master/start_kit/nslt_100.json"
-)
-WLASL_CLASSES_URL = (
-    "https://raw.githubusercontent.com/dxli94/WLASL/master/start_kit/wlasl_class_list.txt"
-)
+WLASL100_GLOSSES = 100
 
 # Kaggle competition "Google - Isolated Sign Language Recognition".
 GOOGLE_COMPETITION = "asl-signs"
@@ -188,60 +187,49 @@ def download_videos(dataset: SignDataset) -> tuple[list[Path], list[tuple[str, s
 
 def _load_wlasl(root: Path, *, download: bool) -> SignDataset:
     meta = root / "WLASL_v0.3.json"
-    splits = root / "nslt_100.json"
-    classes = root / "wlasl_class_list.txt"
     if download:
         _ensure_url(WLASL_JSON_URL, meta)
-        _ensure_url(WLASL_SPLIT_URL, splits)
-        _ensure_url(WLASL_CLASSES_URL, classes)
-    missing = [path.name for path in (meta, splits) if not path.exists()]
-    if missing:
+    if not meta.exists():
         raise FileNotFoundError(
-            f"WLASL100 metadata missing in {root}: {', '.join(missing)}. "
-            "load('wlasl100', download=True) fetches it from the WLASL GitHub repo."
+            f"WLASL100 metadata missing in {root}. "
+            "load('wlasl100', download=True) fetches WLASL_v0.3.json."
         )
 
-    catalog = _wlasl_catalog(meta)
-    split_rows = json.loads(splits.read_text())
-    names = _wlasl_class_names(classes)
-
+    entries = json.loads(meta.read_text())[:WLASL100_GLOSSES]
+    if not entries:
+        raise ValueError(f"WLASL_v0.3.json in {root} has no glosses")
+    glosses = tuple(entry["gloss"] for entry in entries)
     samples = []
-    for video_id, info in split_rows.items():
-        video_id = _safe_id(str(video_id))
-        action = info["action"]
-        label = int(action[0] if isinstance(action, list) else action)
-        subset = info["subset"]
-        if subset == "validation":
-            subset = "val"
-        if subset not in ("train", "val", "test"):
-            raise ValueError(f"WLASL sample {video_id} has subset {subset!r}")
-        if label < 0 or label >= len(names) or not names[label]:
-            raise ValueError(f"WLASL sample {video_id} has unknown class {label}")
-        inst = catalog.get(video_id)
-        samples.append(
-            Sample(
-                source="wlasl100",
-                sample_id=video_id,
-                gloss=names[label],
-                label=label,
-                split=subset,
-                video_path=root / "videos" / f"{video_id}.mp4",
-                frame_start=None if inst is None else _as_int(inst.get("frame_start")),
-                frame_end=None if inst is None else _as_int(inst.get("frame_end")),
-                fps=None if inst is None else _as_int(inst.get("fps")),
-                url=None if inst is None else inst.get("url"),
+    seen = set()
+    for label, entry in enumerate(entries):
+        for inst in entry["instances"]:
+            video_id = _safe_id(str(inst["video_id"]))
+            if video_id in seen:
+                raise ValueError(f"duplicate WLASL video_id {video_id}")
+            seen.add(video_id)
+            subset = inst["split"]
+            if subset == "validation":
+                subset = "val"
+            if subset not in ("train", "val", "test"):
+                raise ValueError(f"WLASL sample {video_id} has subset {subset!r}")
+            samples.append(
+                Sample(
+                    source="wlasl100",
+                    sample_id=video_id,
+                    gloss=entry["gloss"],
+                    label=label,
+                    split=subset,
+                    video_path=root / "videos" / f"{video_id}.mp4",
+                    frame_start=_as_int(inst.get("frame_start")),
+                    frame_end=_as_int(inst.get("frame_end")),
+                    fps=_as_int(inst.get("fps")),
+                    url=inst.get("url"),
+                )
             )
-        )
-    samples.sort(key=lambda sample: sample.sample_id)
     if not samples:
-        raise ValueError(f"nslt_100.json in {root} has no samples")
-    # The class list covers every WLASL gloss. Keep only the indexes this
-    # subset uses, which are 0..99 for the official top-100 split.
-    limit = max(sample.label for sample in samples) + 1
-    missing = [index for index in range(limit) if index >= len(names) or not names[index]]
-    if missing:
-        raise ValueError(f"WLASL100 class list is missing indexes {missing[:8]}")
-    return SignDataset("wlasl100", root, tuple(names[:limit]), tuple(samples))
+        raise ValueError(f"WLASL_v0.3.json in {root} has no instances")
+    samples.sort(key=lambda sample: sample.sample_id)
+    return SignDataset("wlasl100", root, glosses, tuple(samples))
 
 
 def _load_google(root: Path, *, download: bool) -> SignDataset:
@@ -298,34 +286,6 @@ def _participant_split(participant_id: str) -> str:
     return "val" if bucket == 8 else "test"
 
 
-def _wlasl_catalog(path: Path) -> dict:
-    catalog = {}
-    for entry in json.loads(path.read_text()):
-        for inst in entry["instances"]:
-            catalog[str(inst["video_id"])] = inst
-    return catalog
-
-
-def _wlasl_class_names(path: Path) -> list[str]:
-    names: dict[int, str] = {}
-    if path.exists():
-        for line in path.read_text().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            index, gloss = line.split(maxsplit=1)
-            names[int(index)] = gloss
-    if not names:
-        raise FileNotFoundError(
-            f"missing {path.name}. It maps WLASL class indexes to glosses."
-        )
-    size = max(names) + 1
-    glosses = [""] * size
-    for index, gloss in names.items():
-        glosses[index] = gloss
-    return glosses
-
-
 def _glosses_from_map(mapping: dict) -> tuple[str, ...]:
     if not mapping:
         raise ValueError("sign_to_prediction_index_map.json is empty")
@@ -341,15 +301,61 @@ def _glosses_from_map(mapping: dict) -> tuple[str, ...]:
 
 
 def _download_google(root: Path) -> None:
-    kaggle = shutil.which("kaggle")
-    if kaggle is None:
+    _apply_dotenv(Path(__file__).resolve().parents[1] / ".env")
+    token = os.environ.get("KAGGLE_API_TOKEN", "").strip()
+    root.mkdir(parents=True, exist_ok=True)
+    if token:
+        _download_google_token(root, token)
+    else:
+        _download_google_cli(root)
+    archives = sorted(root.glob("*.zip"))
+    if not archives:
+        raise FileNotFoundError(f"Kaggle wrote no zip into {root}")
+    import zipfile
+
+    with zipfile.ZipFile(archives[0]) as archive:
+        archive.extractall(root)
+    archives[0].unlink()
+
+
+def _download_google_token(root: Path, token: str) -> None:
+    """Download with a KGAT token. The PyPI client on Python 3.9 cannot."""
+    url = (
+        "https://www.kaggle.com/api/v1/competitions/data/download-all/"
+        + GOOGLE_COMPETITION
+    )
+    request = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
+    )
+    dest = root / f"{GOOGLE_COMPETITION}.zip"
+    partial = dest.with_suffix(".zip.part")
+    try:
+        with urllib.request.urlopen(request) as response, partial.open("wb") as out:
+            shutil.copyfileobj(response, out, length=1024 * 1024)
+        if partial.stat().st_size == 0:
+            raise RuntimeError("Kaggle returned an empty archive")
+        partial.replace(dest)
+    except urllib.error.HTTPError as exc:
+        partial.unlink(missing_ok=True)
+        detail = exc.read().decode("utf-8", "replace").strip()
+        raise RuntimeError(f"Kaggle download failed ({exc.code}): {detail}") from exc
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+
+
+def _download_google_cli(root: Path) -> None:
+    if not os.environ.get("KAGGLE_USERNAME") or not os.environ.get("KAGGLE_KEY"):
         raise RuntimeError(
-            "Google ISLR is the Kaggle competition 'asl-signs'. Install the "
-            "Kaggle CLI, accept the competition rules, and put an API token in "
-            "~/.kaggle/kaggle.json. Or unpack the archive so train.csv and "
+            "Google ISLR is the Kaggle competition 'asl-signs'. Accept the "
+            "rules, then set KAGGLE_API_TOKEN in .env (Create New Token). "
+            "Or unpack the archive so train.csv and "
             f"train_landmark_files/ sit under {root}."
         )
-    root.mkdir(parents=True, exist_ok=True)
+    kaggle = shutil.which("kaggle")
+    if kaggle is None:
+        raise RuntimeError("The kaggle command is not installed.")
     result = subprocess.run(
         [kaggle, "competitions", "download", "-c", GOOGLE_COMPETITION, "-p", str(root)],
         capture_output=True,
@@ -358,14 +364,23 @@ def _download_google(root: Path) -> None:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise RuntimeError(detail or "kaggle competitions download failed")
-    archives = sorted(root.glob("*.zip"))
-    if not archives:
-        raise FileNotFoundError(f"kaggle wrote no zip into {root}")
-    import zipfile
 
-    with zipfile.ZipFile(archives[0]) as archive:
-        archive.extractall(root)
-    archives[0].unlink()
+
+def _apply_dotenv(path: Path) -> None:
+    """Fill missing environment variables from a KEY=value file."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :]
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and value:
+            os.environ.setdefault(key, value)
 
 
 def _find_google_root(root: Path) -> Path | None:

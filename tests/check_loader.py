@@ -2,6 +2,7 @@
 
 import csv
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -9,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from asl_benchmark import load, load_landmarks  # noqa: E402
-from asl_benchmark.loader import Sample, ensure_video  # noqa: E402
+from asl_benchmark.loader import Sample, _apply_dotenv, ensure_video  # noqa: E402
 
 
 def main() -> None:
@@ -19,75 +20,91 @@ def main() -> None:
         _check_google(root)
         _check_video_file_url(root)
         _check_refuses_unknown_and_missing(root)
+        _check_dotenv(root)
     print("ok")
 
 
 def _check_wlasl(root: Path) -> None:
     folder = root / "wlasl100"
     folder.mkdir()
-    (folder / "WLASL_v0.3.json").write_text(
-        json.dumps(
-            [
+    # 100 kept glosses, then one past the cutoff that must be dropped.
+    entries = [
+        {
+            "gloss": "book",
+            "instances": [
                 {
-                    "gloss": "book",
-                    "instances": [
-                        {
-                            "video_id": "10",
-                            "url": "https://example.com/10.mp4",
-                            "frame_start": 1,
-                            "frame_end": 12,
-                            "fps": 25,
-                            "split": "train",
-                        }
-                    ],
-                },
+                    "video_id": "10",
+                    "url": "https://example.com/10.mp4",
+                    "frame_start": 1,
+                    "frame_end": 12,
+                    "fps": 25,
+                    "split": "train",
+                }
+            ],
+        },
+        {
+            "gloss": "drink",
+            "instances": [
                 {
-                    "gloss": "drink",
-                    "instances": [
-                        {
-                            "video_id": "11",
-                            "url": "https://example.com/11.mp4",
-                            "frame_start": 3,
-                            "frame_end": -1,
-                            "fps": 25,
-                            "split": "train",
-                        },
-                        {
-                            "video_id": "99",
-                            "url": "https://example.com/not-in-subset.mp4",
-                            "frame_start": 1,
-                            "frame_end": 2,
-                            "fps": 25,
-                            "split": "test",
-                        },
-                    ],
-                },
-            ]
-        )
-    )
-    (folder / "nslt_100.json").write_text(
-        json.dumps(
+                    "video_id": "11",
+                    "url": "https://example.com/11.mp4",
+                    "frame_start": 3,
+                    "frame_end": -1,
+                    "fps": 25,
+                    "split": "validation",
+                }
+            ],
+        },
+    ]
+    for index in range(98):
+        entries.append(
             {
-                "10": {"action": [0], "subset": "train"},
-                "11": {"action": [1], "subset": "validation"},
+                "gloss": f"filler{index}",
+                "instances": [
+                    {
+                        "video_id": f"f{index}",
+                        "url": "https://example.com/filler.mp4",
+                        "frame_start": 1,
+                        "frame_end": 2,
+                        "fps": 25,
+                        "split": "test",
+                    }
+                ],
             }
         )
+    entries.append(
+        {
+            "gloss": "later",
+            "instances": [
+                {
+                    "video_id": "99",
+                    "url": "https://example.com/not-in-subset.mp4",
+                    "frame_start": 1,
+                    "frame_end": 2,
+                    "fps": 25,
+                    "split": "test",
+                }
+            ],
+        }
     )
-    (folder / "wlasl_class_list.txt").write_text("0 book\n1 drink\n")
+    (folder / "WLASL_v0.3.json").write_text(json.dumps(entries))
 
     data = load("wlasl100", root, download=False)
-    assert data.glosses == ("book", "drink")
-    assert [sample.sample_id for sample in data.samples] == ["10", "11"]
+    assert data.glosses[0] == "book" and data.glosses[1] == "drink"
+    assert len(data.glosses) == 100
+    assert "later" not in data.glosses
+    ids = {sample.sample_id for sample in data.samples}
+    assert "10" in ids and "11" in ids and "99" not in ids
     train = data.split("train")
     assert len(train) == 1 and train[0].gloss == "book" and train[0].label == 0
     held = data.split("val")
     assert len(held) == 1
     assert held[0].sample_id == "11"
+    assert held[0].label == 1
     assert held[0].frame_end == -1
     assert held[0].fps == 25
     assert held[0].video_path == folder / "videos" / "11.mp4"
     assert held[0].landmark_path is None
-    assert data.split("test") == ()
 
 
 def _check_google(root: Path) -> None:
@@ -184,6 +201,18 @@ def _check_refuses_unknown_and_missing(root: Path) -> None:
         pass
     else:
         raise AssertionError("missing WLASL metadata was accepted")
+
+
+def _check_dotenv(root: Path) -> None:
+    path = root / "sample.env"
+    path.write_text('export EXAMPLE_TOKEN="abc"\n# comment\n\n')
+    os.environ.pop("EXAMPLE_TOKEN", None)
+    _apply_dotenv(path)
+    assert os.environ["EXAMPLE_TOKEN"] == "abc"
+    os.environ["EXAMPLE_TOKEN"] = "kept"
+    _apply_dotenv(path)
+    assert os.environ["EXAMPLE_TOKEN"] == "kept"
+    os.environ.pop("EXAMPLE_TOKEN", None)
 
 
 if __name__ == "__main__":
