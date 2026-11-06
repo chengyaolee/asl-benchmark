@@ -119,27 +119,37 @@ def load_landmarks(sample: Sample):
         sample.landmark_path,
         columns=["frame", "type", "landmark_index", "x", "y", "z"],
     )
-    frames = table.column("frame").to_pylist()
-    types = table.column("type").to_pylist()
-    indexes = table.column("landmark_index").to_pylist()
-    xs = _float_list(table.column("x"))
-    ys = _float_list(table.column("y"))
-    zs = _float_list(table.column("z"))
+    n = table.num_rows
+    if n == 0:
+        return np.zeros((0, N_LANDMARKS, 3), np.float32)
 
-    order = sorted({int(frame) for frame in frames if frame is not None})
-    position = {frame: i for i, frame in enumerate(order)}
-    out = np.full((len(order), N_LANDMARKS, 3), np.nan, dtype=np.float32)
-    for frame, kind, index, x, y, z in zip(frames, types, indexes, xs, ys, zs):
-        if frame is None or kind not in _LANDMARK_OFFSET or index is None:
-            continue
-        base, count = _LANDMARK_OFFSET[kind]
-        index = int(index)
-        if index < 0 or index >= count:
-            continue
-        row = position[int(frame)]
-        out[row, base + index, 0] = x
-        out[row, base + index, 1] = y
-        out[row, base + index, 2] = z
+    frame_missing = _null_mask(table.column("frame"))
+    index_missing = _null_mask(table.column("landmark_index"))
+    frames = table.column("frame").fill_null(0).to_numpy(zero_copy_only=False)
+    indexes = table.column("landmark_index").fill_null(0).to_numpy(zero_copy_only=False)
+    xs = _float_numpy(table.column("x"))
+    ys = _float_numpy(table.column("y"))
+    zs = _float_numpy(table.column("z"))
+    base_of = np.full(n, -1, np.int32)
+    count_of = np.zeros(n, np.int32)
+    kinds = np.array(table.column("type").to_pylist())
+    for name, (base, count) in _LANDMARK_OFFSET.items():
+        hit = kinds == name
+        base_of[hit] = base
+        count_of[hit] = count
+
+    present = ~frame_missing
+    order = np.unique(frames[present])
+    out = np.full((len(order), N_LANDMARKS, 3), np.nan, np.float32)
+    ok = present & ~index_missing & (base_of >= 0) & (indexes >= 0) & (indexes < count_of)
+    if len(order) == 0 or not ok.any():
+        return out
+    cols = base_of[ok] + indexes[ok]
+    rows = np.searchsorted(order, frames[ok])
+    # Duplicate cells keep the last row, matching a forward scan.
+    out[rows, cols, 0] = xs[ok]
+    out[rows, cols, 1] = ys[ok]
+    out[rows, cols, 2] = zs[ok]
     return out
 
 
@@ -459,7 +469,14 @@ def _as_int(value):
     return int(value)
 
 
-def _float_list(column) -> list[float]:
+def _null_mask(column):
     import numpy as np
 
-    return [np.nan if value is None else float(value) for value in column.to_pylist()]
+    return np.asarray(column.is_null().to_numpy(zero_copy_only=False), dtype=bool)
+
+
+def _float_numpy(column):
+    import numpy as np
+
+    filled = column.fill_null(np.nan).to_numpy(zero_copy_only=False)
+    return np.asarray(filled, dtype=np.float32)

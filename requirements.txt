@@ -1,3 +1,7 @@
 numpy
 pyarrow
 kaggle
+xgboost
+scikit-learn
+torch
+opencv-python-headless
