@@ -3,18 +3,12 @@
     python -m asl_benchmark.compare google_islr
     python -m asl_benchmark.compare wlasl100
 
-Pose models read both hands: 21 points each, (x, y, z), 126 values a frame.
+Pose models read both hands: 21 points each, (x, y, z), 42 points per frame.
 Google ISLR already stores those inside the 543-point parquet. WLASL reads
-``data/wlasl100/landmarks/<id>.npy`` shaped ``(frames, 42, 3)``, left hand
-then right, NaN where a hand is missing. The CNN reads the mp4 window on
-the sample. All three numbers are comparable only on clips that have both.
-
-The test split is the score. Validation is left for later ablations.
-Training time is the fit only. Latency is the test-set predict time
-divided by the number of clips.
-
-# ponytail: untuned sizes live in each architecture file, not here.
-# Upgrade path is the ablation pass.
+``data/wlasl100/keypoints/<id>.npy`` (or ``landmarks/<id>.npy``) shaped
+``(frames, 42, 3)``, left hand then right, NaN where a hand is missing.
+The CNN reads the mp4 window on the sample. All models are scored on the
+same clips.
 """
 
 from __future__ import annotations
@@ -26,7 +20,7 @@ import numpy as np
 
 from asl_benchmark.loader import SOURCES, load, load_landmarks
 
-EPOCHS = 20
+EPOCHS = 200
 
 
 @dataclass(frozen=True)
@@ -37,6 +31,10 @@ class Result:
     latency_ms: float
     n_train: int
     n_test: int
+    val_top1: float | None = None
+    top5: float | None = None
+    n_val: int = 0
+    top1_std: float = 0.0
 
 
 def compare(source: str, root: str = "data", epochs: int = EPOCHS, limit: int | None = None):
@@ -52,13 +50,16 @@ def compare(source: str, root: str = "data", epochs: int = EPOCHS, limit: int | 
 
     dataset = load(source, root, download=False)
     train_samples = dataset.split("train")
+    val_samples = dataset.split("val")
     test_samples = dataset.split("test")
     if limit is not None:
         train_samples = train_samples[:limit]
+        val_samples = val_samples[:limit]
         test_samples = test_samples[:limit]
     n_train_all = len(train_samples)
     n_test_all = len(test_samples)
     train_rows = _load_split(dataset, train_samples, "train")
+    val_rows = _load_split(dataset, val_samples, "val")
     test_rows = _load_split(dataset, test_samples, "test")
     use_pose = _has(train_rows, 1) and _has(test_rows, 1)
     use_frames = _has(train_rows, 2) and _has(test_rows, 2)
@@ -75,8 +76,9 @@ def compare(source: str, root: str = "data", epochs: int = EPOCHS, limit: int | 
         mode = "xgboost and transformer; the CNN needs the mp4 files"
     else:
         keep = lambda row: row[2] is not None
-        mode = "cnn only; pose models need hand landmarks"
+        mode = "cnn only; pose models need hand keypoints"
     train_rows = [row for row in train_rows if keep(row)]
+    val_rows = [row for row in val_rows if keep(row)]
     test_rows = [row for row in test_rows if keep(row)]
     if not train_rows or not test_rows:
         raise RuntimeError(
@@ -85,12 +87,26 @@ def compare(source: str, root: str = "data", epochs: int = EPOCHS, limit: int | 
     n_classes = len(dataset.glosses)
     train_y = [row[0] for row in train_rows]
     test_y = [row[0] for row in test_rows]
+    val_y = [row[0] for row in val_rows]
     results = []
     if use_pose:
         train_seq = [row[1] for row in train_rows]
         test_seq = [row[1] for row in test_rows]
-        results.append(xgboost.infer(train_seq, train_y, test_seq, test_y))
-        results.append(transformer.infer(train_seq, train_y, test_seq, test_y, n_classes, epochs))
+        val_seq = [row[1] for row in val_rows] or None
+        held_y = val_y or None
+        results.append(xgboost.infer(train_seq, train_y, test_seq, test_y, val_seq, held_y))
+        results.append(
+            transformer.infer(
+                train_seq,
+                train_y,
+                test_seq,
+                test_y,
+                n_classes,
+                epochs,
+                val_seq,
+                held_y,
+            )
+        )
     if use_frames:
         results.append(
             cnn.infer(
@@ -100,11 +116,14 @@ def compare(source: str, root: str = "data", epochs: int = EPOCHS, limit: int | 
                 test_y,
                 n_classes,
                 epochs,
+                None if not val_rows else [row[2] for row in val_rows],
+                val_y or None,
             )
         )
     note = (
-        f"{dataset.source}: {len(train_rows)}/{n_train_all} train and "
-        f"{len(test_rows)}/{n_test_all} test. {mode}."
+        f"{dataset.source}: {len(train_rows)}/{n_train_all} train, "
+        f"{len(val_rows)} val, and {len(test_rows)}/{n_test_all} test. {mode}. "
+        "Mean of 3 seeds. Train clips are augmented; validation stops training early."
     )
     return results, report(results, note)
 
@@ -125,13 +144,22 @@ def _chart(results) -> str:
 
 
 def _table(results) -> str:
-    lines = [f"{'model':<14}{'top1':>8}{'train_s':>10}{'ms/clip':>10}{'n_train':>8}{'n_test':>8}"]
+    lines = [
+        f"{'model':<14}{'top1':>8}{'std':>8}{'top5':>8}{'val':>8}"
+        f"{'train_s':>10}{'ms/clip':>10}{'n_train':>8}{'n_val':>8}{'n_test':>8}"
+    ]
     for row in results:
         lines.append(
-            f"{row.model:<14}{row.top1:8.3f}{row.train_seconds:10.2f}{row.latency_ms:10.2f}"
-            f"{row.n_train:8d}{row.n_test:8d}"
+            f"{row.model:<14}{row.top1:8.3f}{row.top1_std:8.3f}{_cell(row.top5)}{_cell(row.val_top1)}"
+            f"{row.train_seconds:10.2f}{row.latency_ms:10.2f}{row.n_train:8d}{row.n_val:8d}{row.n_test:8d}"
         )
     return "\n".join(lines)
+
+
+def _cell(value: float | None) -> str:
+    if value is None:
+        return f"{'--':>8}"
+    return f"{value:8.3f}"
 
 
 def _load_split(dataset, samples, kind: str):
@@ -147,10 +175,14 @@ def _load_split(dataset, samples, kind: str):
 
 
 def _sequence(dataset, sample):
+    from asl_benchmark.models import hands as hand_landmarks
+
     if sample.landmark_path is not None:
         seq = load_landmarks(sample)
     else:
-        path = dataset.root / "landmarks" / f"{sample.sample_id}.npy"
+        path = dataset.root / "keypoints" / f"{sample.sample_id}.npy"
+        if not path.exists():
+            path = dataset.root / "landmarks" / f"{sample.sample_id}.npy"
         if not path.exists():
             return None
         seq = np.load(path)
@@ -158,7 +190,7 @@ def _sequence(dataset, sample):
             raise ValueError(f"{path} must have shape (frames, points, 3), got {seq.shape}")
     if len(seq) == 0:
         return None
-    return seq
+    return hand_landmarks.hands(seq)
 
 
 def _has(rows, index: int) -> bool:
@@ -168,9 +200,9 @@ def _has(rows, index: int) -> bool:
 def _hint(dataset) -> str:
     if dataset.source == "wlasl100":
         return (
-            "Pose models read data/wlasl100/landmarks/<id>.npy shaped (frames, 42, 3), "
-            "left hand then right, NaN if a hand is missing. The CNN reads "
-            "data/wlasl100/videos/<id>.mp4. The three models share the clips that have both."
+            "Run python scripts/extract.py first. Pose models read "
+            "data/wlasl100/keypoints/<id>.npy shaped (frames, 42, 3). "
+            "The CNN reads data/wlasl100/videos/<id>.mp4 on those same clips."
         )
     return "Pose models read the Google landmark parquet. This dataset has no video, so the CNN does not run."
 
