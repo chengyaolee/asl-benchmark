@@ -304,8 +304,6 @@ def main() -> None:
     args = p.parse_args()
 
     kp_dir = ROOT / "data/wlasl100/keypoints"
-    if not kp_dir.exists():
-        kp_dir = ROOT / "data/wlasl100/landmarks"
     clips = {"train": [], "val": [], "test": []}
     labels = {"train": [], "val": [], "test": []}
     for s in load("wlasl100", ROOT / "data", download=False).samples:

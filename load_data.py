@@ -1,10 +1,9 @@
-"""Fetch WLASL100 and Google ISLR into data/.
+"""Fetch WLASL100 into data/wlasl100.
 
 WLASL clips come from the Kaggle dataset risangbaskoro/wlasl-processed.
 The zip is saved at data/raw/wlasl.zip, unpacked under data/raw, and the
 mp4 files are copied to data/wlasl100/videos, where load() looks.
 Credentials are ~/.kaggle/kaggle.json, or KAGGLE_API_TOKEN in .env.
-Google ISLR is downloaded by load().
 
 Run from the repository root:
 
@@ -30,15 +29,14 @@ WLASL_URL = (
 
 
 def main() -> None:
-    """Download both datasets and print how many samples each one has."""
+    """Download WLASL100 videos and metadata and print dataset counts."""
     root = Path("data")
     _download_wlasl_clips(root)
-    for source in ("wlasl100", "google_islr"):
-        dataset = asl_benchmark.load(source, root)
-        print(
-            f"{dataset.source}: {len(dataset.samples)} samples, "
-            f"{len(dataset.glosses)} glosses -> {dataset.root}"
-        )
+    dataset = asl_benchmark.load("wlasl100", root)
+    print(
+        f"{dataset.source}: {len(dataset.samples)} samples, "
+        f"{len(dataset.glosses)} glosses -> {dataset.root}"
+    )
 
 
 def _download_wlasl_clips(root: Path) -> None:

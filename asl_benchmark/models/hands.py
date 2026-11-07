@@ -4,23 +4,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from asl_benchmark.loader import LANDMARK_LAYOUT, N_LANDMARKS
+N_HAND_LANDMARKS = 42
 
 
 def hands(sequence):
-    """(frames, 42, 3). A full 543-point frame is sliced to left hand, then right."""
+    """Validate and return (frames, 42, 3) float32 hand landmarks (left hand 0..20, right hand 21..41)."""
     sequence = np.asarray(sequence, dtype=np.float32)
     if sequence.ndim != 3 or sequence.shape[-1] != 3:
         raise ValueError(f"landmarks must be (frames, points, 3), got {sequence.shape}")
-    if sequence.shape[1] != N_LANDMARKS:
-        return sequence
-    parts = []
-    base = 0
-    for name, count in LANDMARK_LAYOUT:
-        if name in ("left_hand", "right_hand"):
-            parts.append(sequence[:, base : base + count])
-        base += count
-    return np.concatenate(parts, axis=1)
+    return sequence
 
 
 def flat(sequence) -> np.ndarray:

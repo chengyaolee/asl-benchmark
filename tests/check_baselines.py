@@ -1,6 +1,5 @@
 """Each architecture infers on its own, and compare prints the chart."""
 
-import csv
 import json
 import sys
 import tempfile
@@ -16,6 +15,7 @@ from asl_benchmark.models import cnn, transformer, xgboost  # noqa: E402
 from asl_benchmark.models.cnn import frame_span  # noqa: E402
 from asl_benchmark.models.hands import hands  # noqa: E402
 from asl_benchmark.models.transformer import SmallTransformer, pack_sequences, train  # noqa: E402
+from scripts.features import per_frame  # noqa: E402
 
 
 def main() -> None:
@@ -27,7 +27,6 @@ def main() -> None:
     _check_appearance_runs()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        _check_google_run(root)
         _check_wlasl_landmark_cache(root)
     print("ok")
 
@@ -53,32 +52,32 @@ def _check_chart() -> None:
 
 
 def _check_hands_and_tree_features() -> None:
-    seq = np.zeros((2, 1, 3), np.float32)
-    seq[0, 0] = (0, 1, 2)
-    seq[1, 0] = (2, 1, 2)
-    feat = xgboost.features(seq)
-    assert feat.shape == (9,)
-    assert np.allclose(feat, [1, 1, 2, 1, 0, 0, 2, 0, 0])
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        blank = xgboost.features(np.full((2, 1, 3), np.nan, np.float32))
-    assert np.array_equal(blank, np.zeros(9, np.float32))
-
-    full = np.full((1, 543, 3), np.nan, np.float32)
-    full[0, 468, 0] = 0.25
-    full[0, 522, 1] = 0.5
+    full = np.full((1, 42, 3), np.nan, np.float32)
+    full[0, 0] = (0.25, 0.1, 0.0)
+    full[0, 9] = (0.25, 0.2, 0.0)
+    full[0, 21, 1] = 0.5
     both = hands(full)
     assert both.shape == (1, 42, 3)
     assert both[0, 0, 0] == np.float32(0.25)
     assert both[0, 21, 1] == np.float32(0.5)
-    assert np.isnan(both[0, 1, 0])
-    assert xgboost.features(full).shape == (42 * 3 * 3,)
+    assert np.isnan(both[0, 2, 0])
+
+    framed = per_frame(both, location=True)
+    assert framed.shape == (1, 132)
+    assert framed[0, 126] == 1.0
+    assert framed[0, 127] == 1.0
+    assert xgboost.features(full).shape == (264,)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        blank = per_frame(np.full((2, 42, 3), np.nan, np.float32), location=True)
+    assert np.all(blank[:, 126] == 1.0)
+    assert np.all(blank[:, 127] == 1.0)
+    assert np.all(blank[:, 128:132] == 0.0)
 
 
 def _check_pack_and_window() -> None:
-    short = np.zeros((2, 1, 3), np.float32)
-    long = np.arange(18, dtype=np.float32).reshape(6, 1, 3)
+    short = np.zeros((2, 3), np.float32)
+    long = np.arange(18, dtype=np.float32).reshape(6, 3)
     packed, pad = pack_sequences([short, long], max_frames=4)
     assert packed.shape == (2, 4, 3)
     assert pad[0].tolist() == [False, False, True, True]
@@ -109,23 +108,33 @@ def _check_fit_updates_weights() -> None:
 
 def _check_separable_pose_models() -> None:
     def clip(value):
-        return np.full((4, 1, 3), value, np.float32)
+        seq = np.zeros((8, 42, 3), np.float32)
+        seq[:, 0] = (0.2 + 0.2 * value, 0.3, 0.0)
+        seq[:, 9] = (0.2 + 0.2 * value, 0.4, 0.0)
+        seq[:, 5] = (0.2 + 0.2 * value + 0.05 * (value + 1), 0.5, 0.1)
+        seq[:, 21] = (0.7, 0.2 + 0.1 * value, 0.0)
+        seq[:, 30] = (0.7, 0.3 + 0.1 * value, 0.0)
+        seq[:, 26] = (0.8, 0.2 + 0.1 * value, 0.2)
+        return seq
 
-    # Default XGBoost refuses a split until a leaf holds enough weight, so the
-    # toy set needs more than a couple of rows per gloss.
-    train, labels = [], []
+    train_clips, labels = [], []
     for label in (0, 1, 2):
-        train.extend(clip(label) for _ in range(20))
+        train_clips.extend(clip(label) for _ in range(20))
         labels.extend([label] * 20)
     test = [clip(0), clip(1), clip(2)]
-    boosted = xgboost.infer(train, labels, test, [0, 1, 2])
+    boosted = xgboost.infer(train_clips, labels, test, [0, 1, 2], augment=False, seeds=(0,))
     assert boosted.model == "xgboost"
     assert boosted.top1 == 1.0
+    assert boosted.top5 == 1.0
     assert boosted.n_train == 60 and boosted.n_test == 3
     assert boosted.train_seconds >= 0 and boosted.latency_ms >= 0
-    shifted = xgboost.infer(train, [label + 10 for label in labels], test, [10, 11, 12])
+    shifted = xgboost.infer(
+        train_clips, [label + 10 for label in labels], test, [10, 11, 12], augment=False, seeds=(0,)
+    )
     assert shifted.top1 == 1.0
-    net = transformer.infer(train, labels, test, [0, 1, 2], n_classes=3, epochs=30)
+    net = transformer.infer(
+        train_clips, labels, test, [0, 1, 2], n_classes=3, epochs=30, augment=False, seeds=(0,)
+    )
     assert net.model == "transformer"
     assert net.top1 == 1.0
     assert net.n_test == boosted.n_test
@@ -135,51 +144,14 @@ def _check_appearance_runs() -> None:
     def block(value):
         return np.full((2, 8, 8, 3), value, np.uint8)
 
-    train = [block(0), block(0), block(255), block(255)]
+    train_clips = [block(0), block(0), block(255), block(255)]
     test = [block(0), block(255)]
-    result = cnn.infer(train, [0, 0, 1, 1], test, [0, 1], n_classes=2, epochs=15)
+    result = cnn.infer(
+        train_clips, [0, 0, 1, 1], test, [0, 1], n_classes=2, epochs=15, augment=False, seeds=(0,)
+    )
     assert result.model == "cnn"
     assert result.top1 == 1.0
     assert result.n_train == 4 and result.n_test == 2
-
-
-def _check_google_run(root: Path) -> None:
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    folder = root / "google_islr"
-    files = folder / "train_landmark_files"
-    (files / "1").mkdir(parents=True)
-    (files / "0").mkdir()
-    rows = [("path", "participant_id", "sequence_id", "sign")]
-    for participant, split_ids in (("1", ("20", "21", "22")), ("0", ("30", "31", "32"))):
-        for sample_id, gloss in zip(split_ids, ("book", "drink", "tree")):
-            rel = f"train_landmark_files/{participant}/{sample_id}.parquet"
-            rows.append((rel, participant, sample_id, gloss))
-    with (folder / "train.csv").open("w", newline="") as handle:
-        csv.writer(handle).writerows(rows)
-    (folder / "sign_to_prediction_index_map.json").write_text(
-        json.dumps({"book": 0, "drink": 1, "tree": 2})
-    )
-    table = pa.table(
-        {
-            "frame": [0, 1],
-            "type": ["left_hand", "right_hand"],
-            "landmark_index": [0, 0],
-            "x": [0.1, 0.2],
-            "y": [0.3, 0.4],
-            "z": [0.5, None],
-        }
-    )
-    for row in rows[1:]:
-        pq.write_table(table, folder / row[0])
-
-    results, note = compare("google_islr", root, epochs=1)
-    assert [row.model for row in results] == ["xgboost", "transformer"]
-    assert {row.n_train for row in results} == {3}
-    assert {row.n_test for row in results} == {3}
-    assert all(0.0 <= row.top1 <= 1.0 for row in results)
-    assert "CNN" in note
 
 
 def _check_wlasl_landmark_cache(root: Path) -> None:
@@ -199,9 +171,10 @@ def _check_wlasl_landmark_cache(root: Path) -> None:
                     "split": split,
                 }
             )
-            cache = folder / "landmarks" / f"{sample_id}.npy"
+            cache = folder / "keypoints" / f"{sample_id}.npy"
             cache.parent.mkdir(parents=True, exist_ok=True)
-            np.save(cache, np.full((3, 42, 3), label, np.float32))
+            landmarks = np.full((3, 42, 3), label, np.float32)
+            np.save(cache, landmarks)
         entries.append({"gloss": gloss, "instances": instances})
     (folder / "WLASL_v0.3.json").write_text(json.dumps(entries))
 

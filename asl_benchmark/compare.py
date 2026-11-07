@@ -1,14 +1,11 @@
 """Call each architecture's infer and print the comparison.
 
-    python -m asl_benchmark.compare google_islr
     python -m asl_benchmark.compare wlasl100
 
-Pose models read both hands: 21 points each, (x, y, z), 42 points per frame.
-Google ISLR already stores those inside the 543-point parquet. WLASL reads
-``data/wlasl100/keypoints/<id>.npy`` (or ``landmarks/<id>.npy``) shaped
-``(frames, 42, 3)``, left hand then right, NaN where a hand is missing.
-The CNN reads the mp4 window on the sample. All models are scored on the
-same clips.
+Pose models read both hands: 21 points each, (x, y, z), 42 points per frame,
+from ``data/wlasl100/keypoints/<id>.npy`` shaped ``(frames, 42, 3)``, left hand
+then right, NaN where a hand is missing. The CNN reads the mp4 window on the
+sample. All models are scored on the same clips.
 """
 
 from __future__ import annotations
@@ -18,7 +15,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from asl_benchmark.loader import SOURCES, load, load_landmarks
+from asl_benchmark.loader import SOURCES, load
 
 EPOCHS = 200
 
@@ -177,17 +174,12 @@ def _load_split(dataset, samples, kind: str):
 def _sequence(dataset, sample):
     from asl_benchmark.models import hands as hand_landmarks
 
-    if sample.landmark_path is not None:
-        seq = load_landmarks(sample)
-    else:
-        path = dataset.root / "keypoints" / f"{sample.sample_id}.npy"
-        if not path.exists():
-            path = dataset.root / "landmarks" / f"{sample.sample_id}.npy"
-        if not path.exists():
-            return None
-        seq = np.load(path)
-        if seq.ndim != 3 or seq.shape[-1] != 3:
-            raise ValueError(f"{path} must have shape (frames, points, 3), got {seq.shape}")
+    path = dataset.root / "keypoints" / f"{sample.sample_id}.npy"
+    if not path.exists():
+        return None
+    seq = np.load(path)
+    if seq.ndim != 3 or seq.shape[-1] != 3:
+        raise ValueError(f"{path} must have shape (frames, points, 3), got {seq.shape}")
     if len(seq) == 0:
         return None
     return hand_landmarks.hands(seq)
@@ -198,18 +190,16 @@ def _has(rows, index: int) -> bool:
 
 
 def _hint(dataset) -> str:
-    if dataset.source == "wlasl100":
-        return (
-            "Run python scripts/extract.py first. Pose models read "
-            "data/wlasl100/keypoints/<id>.npy shaped (frames, 42, 3). "
-            "The CNN reads data/wlasl100/videos/<id>.mp4 on those same clips."
-        )
-    return "Pose models read the Google landmark parquet. This dataset has no video, so the CNN does not run."
+    return (
+        "Run python scripts/extract.py first. Pose models read "
+        "data/wlasl100/keypoints/<id>.npy shaped (frames, 42, 3). "
+        "The CNN reads data/wlasl100/videos/<id>.mp4 on those same clips."
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Compare the architectures and print the chart.")
-    parser.add_argument("source", choices=SOURCES)
+    parser.add_argument("source", nargs="?", default="wlasl100", choices=SOURCES)
     parser.add_argument("--root", default="data")
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--limit", type=int, default=0, help="cap each split, for a first cheap run")

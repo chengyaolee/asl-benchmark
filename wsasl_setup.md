@@ -109,7 +109,6 @@ python scripts/extract.py
   - Points 0–20 are the signer's **left** hand and points 21–41 are the **right** hand, each as (x, y, z).
   - x and y are normalized to the image size (0–1).
   - A hand that wasn't detected in a frame is **NaN**.
-  - This matches the hand slice of the Google ISLR layout, so `flat()` turns it into `(frames, 126)` for either dataset.
-- Left and right are swapped relative to MediaPipe's own labels. MediaPipe Hands assumes a mirrored selfie image, so its "Left" is the signer's right hand on normal video. The script corrects for that so it matches Holistic/Google.
+- Left and right are swapped relative to MediaPipe's own labels. MediaPipe Hands assumes a mirrored selfie image, so its "Left" is the signer's right hand on normal video. The script corrects for that so points 0–20 are the signer's left hand and points 21–41 are the right hand.
 
 **Sanity checks while it runs:** each line prints `frames=` (usually 30–150) and `hand_seen=` (share of frames where a hand was detected, usually 60–100%). If `hand_seen` is 0% on most videos, something is wrong.
