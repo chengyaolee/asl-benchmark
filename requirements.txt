@@ -1,6 +1,4 @@
 numpy
-pyarrow
-kaggle
 xgboost
 scikit-learn
 torch

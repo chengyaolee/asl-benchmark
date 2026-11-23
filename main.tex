@@ -1,0 +1,239 @@
+\documentclass[10pt]{article}
+\usepackage[margin=0.6in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage[compact]{titlesec}
+\usepackage[font=footnotesize,skip=3pt]{caption}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\setlist{nosep, leftmargin=*}
+\setlength{\parskip}{2pt}
+\setlength{\parindent}{0pt}
+\setlength{\intextsep}{4pt plus 1pt}
+\setlength{\textfloatsep}{5pt plus 1pt}
+\setlength{\floatsep}{4pt plus 1pt}
+\titlespacing*{\section}{0pt}{6pt}{3pt}
+\titlespacing*{\subsection}{0pt}{5pt}{2pt}
+
+% Placeholder marker: search for \todo before submitting.
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\tbd}{\textcolor{red}{??}}   % number to fill in
+% Include a figure if the file exists, otherwise draw a placeholder box.
+\newcommand{\fig}[2]{\IfFileExists{#1}{\includegraphics[width=#2]{#1}}%
+  {\fbox{\parbox[c][3cm][c]{#2}{\centering\small\todo{upload \detokenize{#1}}}}}}
+
+\title{\vspace{-2.0cm}CS289A Progress Report: ASL Sign Recognition}
+\author{Narelle Ho, Cheng Yao Lee \quad 6 November 2026}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-1.1cm}
+
+% %=====================================================================
+% \section{Outline of the Final Report}
+% %=====================================================================
+% Please find the outline of the final report here:
+% \url{https://www.overleaf.com/project/6aee4cdcc2b88b3db0457c88/share#d4e438a59d08dec379fdba8e9b99a9a443581394ddf59c32}.
+
+%=====================================================================
+\section{Progress}
+%=====================================================================
+We study two families of models: (1) \emph{pose-based} models that classify based on extracted keypoints and (2) \emph{appearance-based} models that learn directly from video frames. The data pipeline and all pose-based models (trees, MLP, GRU/LSTM, transformer) are trained; a from-scratch appearance CNN is trained. 
+
+The implementation and code are publicly available at \url{https://github.com/chengyaolee/asl-benchmark}.
+
+%---------------------------------------------------------------------
+\subsection{Dataset}
+%---------------------------------------------------------------------
+For WLASL100 we take the first 100 glosses of \texttt{WLASL\_v0.3.json} with the official split, which reproduces
+the published counts (2{,}038 videos; 1{,}442/338/258). Many WLASL source links are dead, and the preprocessed Kaggle copy contains
+only \textbf{1{,}013 of the 2{,}038} videos. We have requested the missing videos, though open GitHub issues suggest the authors may not reply.
+
+With only 7.5 training clips per sign, overfitting is the main challenge for every model. The 100-clip test set carries about $\pm5$ points of sampling error, so we select on validation accuracy. Most test signers also appear in training, so absolute accuracy may be optimistic for unseen signers. Every model uses the same clips, so the comparison stays fair.
+
+\begin{table}[h]
+\centering\footnotesize
+\begin{tabular}{lcc}
+\toprule
+ & Full WLASL100 & Available subset \\
+\midrule
+Videos (train / val / test) & 2{,}038 (1{,}442 / 338 / 258) & 1{,}013 (748 / 165 / 100) \\
+Train clips per sign (min / mean / max) & 12 / 14.4 / 30 & 4 / 7.5 / 12 \\
+Signs present in test & 100 & 72 \\
+Signers (train / val / test) & 97 (91 / 69 / 56) & 64 (60 / 41 / 34) \\
+Test signers also in train & 52 of 56 & 31 of 34 \\
+Median clip length (10th--90th pct.) & -- & 65 (33--95) frames, $\approx$2.6\,s \\
+Frames with left / right / both hands & -- & 32\% / 60\% / 27\% \\
+\bottomrule
+\end{tabular}
+\caption{Dataset statistics (hand detection via MediaPipe Hands).}
+\label{tab:data}
+\end{table}
+
+%---------------------------------------------------------------------
+\subsection{Feature analysis}
+%---------------------------------------------------------------------
+We probed the MediaPipe Hand features with nearest-neighbour and logistic-regression probes (Table~\ref{tab:probe}).
+
+\begin{table}[h]
+\centering\footnotesize
+\begin{tabular}{lc@{\hskip 1cm}lc}
+\toprule
+Probe & Acc. & Probe & Acc. \\
+\midrule
+1-NN / 5-NN (cosine) & 22.3 / 15.8 & Linear, hand shape only & 26.0 \\
+Linear, all (flattened) & 27.9 & Linear, location only & 12.1 \\
+Linear, all (\textbf{time-averaged}) & \textbf{41.1} & Nearest clip same signer (chance) & 26.0 (5.1) \\
+\bottomrule
+\end{tabular}
+\caption{Feature separability on val+test (265 clips; accuracy in \%, chance 1\%). }
+\label{tab:probe}
+\end{table}
+
+\textbf{Timing misalignment is a bottleneck:} time-averaging beats the flattened sequence (41.1\% vs.\ 27.9\%) because signers start and move at different times, which motivated temporal pooling. \textbf{Hand shape carries most of the signal:} location adds only 2.6 points on top of it. \textbf{The features also encode the signer:} the nearest training clip shares the signer more often than the sign (26.0\% vs.\ 22.3\%).
+
+
+\subsection{Gradient-boosted trees}\label{sec:trees}
+
+\begin{table}[h]
+\centering\footnotesize
+\begin{tabular}{lcc}
+\toprule
+Rung & Val & Test \\
+\midrule
+0. Pooled (mean, std), no augmentation & 37.2 & 38.0 \\
+1. + augmentation                      & \textbf{39.6} & \textbf{41.3} \\
+\bottomrule
+\end{tabular}
+\caption{XGBoost ablation ladder on Rung~4a features (264 values), top-1 accuracy (\%), mean over 3 seeds (seed std $\le$ 1.6). Best XGBoost: 68.3\% test top-5 (38.9\,s fit, 0.13\,ms/clip).}
+\label{tab:trees}
+\end{table}
+
+\textbf{Takeaways.} Regularized shallow trees (\texttt{max\_depth=3}, \texttt{lr=0.08}, \texttt{subsample=0.8}, \texttt{colsample\_bytree=0.3}) on the standardized 264-feature Rung~4a vector reach \textbf{39.6\% val and 41.3\% test top-1} (68.3\% top-5), with augmentation adding 3.3 test points. On the same pooled features, axis-aligned tree splits trail the linear probe (52.7\%) and the MLP (60.0\%) across 100 classes with 7.5 clips per sign.
+
+\subsection{MLP: results and ablations}\label{sec:ablation}
+%---------------------------------------------------------------------
+
+\begin{table}[h]
+\centering\footnotesize
+\begin{tabular}{lcccc}
+\toprule
+ & \multicolumn{2}{c}{Linear} & \multicolumn{2}{c}{MLP} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Rung & Val & Test & Val & Test \\
+\midrule
+1. Hand shape, 32 frames flattened & 27.7 & 16.0 & 36.6 & 28.3 \\
+2. + wrist location               & 31.1 & 18.7 & 39.8 & 30.3 \\
+3. + augmentation                 & 43.4 & 36.0 & 52.5 & 44.0 \\
+4a. + temporal pooling (mean, std) & 52.3 & 52.7 & \textbf{63.6} & \textbf{60.0} \\
+4b. + temporal pooling (4 chunks)  & 56.2 & 45.0 & 62.2 & 53.0 \\
+5. 4a + velocity                  & 48.9 & 46.0 & 57.0 & 53.3 \\
+\bottomrule
+\end{tabular}
+\caption{Ablation ladder, top-1 accuracy (\%), mean over 3 seeds (seed std $\le$ 3.4). Best MLP: 84.3\% test top-5. Train-time augmentation: crop, rotate, scale, shift, noise.}
+\label{tab:ladder}
+\end{table}
+
+\textbf{Takeaways.} Temporal pooling gives the largest gain: averaging features over time raises the MLP from
+44.0\% to 60.0\% test accuracy, as the feature analysis predicted. Augmentation gives the second largest gain,
+adding 14--17 points for both models. The MLP beats the linear model on every rung. Our best MLP exceeds the original WLASL pose baselines (Pose-GRU 46.5\%, Pose-TGCN 55.4\%), although it
+uses only half the data, and it trains in under a minute on a CPU.
+\subsection{Sequence models: GRU and LSTM}\label{sec:rnn}
+
+\begin{table}[h]
+\centering\footnotesize
+\begin{tabular}{lcccc}
+\toprule
+ & \multicolumn{2}{c}{GRU} & \multicolumn{2}{c}{LSTM} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Rung & Val & Test & Val & Test \\
+\midrule
+0. Base, no augmentation & 41.8 & 43.0 & 41.6 & 47.3 \\
+1. Base: 1 layer, 128 units, last state & 51.3 & 53.3 & 50.5 & 50.0 \\
+2. + bidirectional & 57.0 & 53.3 & 57.0 & 51.0 \\
+3. + mean over time instead of last state & \textbf{66.3} & \textbf{60.7} & \textbf{63.4} & \textbf{63.3} \\
+4. + second layer & 66.3 & 65.7 & 60.0 & 56.0 \\
+\bottomrule
+\end{tabular}
+\caption{GRU/LSTM ablation ladder, top-1 accuracy (\%), mean over 3 seeds (seed std $\le$ 5.0). Best by val
+(ties go to the smaller model): rung 3, with 87.7\% (GRU) and 86.3\% (LSTM) test top-5.}
+\label{tab:rnn}
+\end{table}
+
+\textbf{Takeaways.} On the same unpooled input, the base GRU beats the MLP (53.3\% vs.\ 44.0\% test), because it
+handles timing differences itself, and depends much less on augmentation. Averaging
+the outputs over time is still the largest gain (GRU val 57.0 $\to$ 66.3\%). The best GRU (60.7\%) and LSTM (63.3\%) end up within the test noise of the pooled MLP (60.0\%): once a model averages over time, the
+architecture matters little.
+
+\subsection{Transformer}\label{sec:transformer}
+
+\begin{table}[h]
+\centering\footnotesize
+\begin{tabular}{lcc}
+\toprule
+Rung & Val & Test \\
+\midrule
+1. Hand shape, 32 frames, mean-pooled & 67.1 & 63.3 \\
+2. + wrist location, no augmentation  & 68.9 & 68.7 \\
+3. + augmentation (2 layers, width 128, 4 heads) & \textbf{68.9} & \textbf{68.3} \\
+\bottomrule
+\end{tabular}
+\caption{Transformer ablation ladder, top-1 accuracy (\%), mean over 3 seeds (seed std $\le$ 3.7). Best transformer: 88.0\% test top-5 (29.3\,s fit, 0.02\,ms/clip).}
+\label{tab:transformer}
+\end{table}
+
+\textbf{Takeaways.} Using the standardized 132-d per-frame features, LayerNorm before positional encoding, and mean pooling over 32 frames, the two-layer transformer reaches \textbf{68.9\% val, 68.3\% test top-1, and 88.0\% test top-5}, outperforming both the pooled MLP (60.0\%) and the best GRU/LSTM (60.7--63.3\%). Like the RNN, self-attention handles timing differences directly and is much less dependent on augmentation than the flattened MLP.
+
+\subsection{Appearance CNN}\label{sec:cnn}
+
+\begin{table}[h]
+\centering\footnotesize
+\begin{tabular}{lcc}
+\toprule
+Rung & Val & Test \\
+\midrule
+0. 3-layer ConvNet ($8\times64\times64$), no augmentation & 3.2 & 1.0 \\
+1. + augmentation & \textbf{3.2} & \textbf{1.3} \\
+\bottomrule
+\end{tabular}
+\caption{From-scratch CNN, top-1 accuracy (\%), mean over 3 seeds (seed std $\le$ 0.5). Best CNN: 4.3\% test top-5 (92.4\,s fit, 0.34\,ms/clip; chance 1\%).}
+\label{tab:cnn}
+\end{table}
+
+\textbf{Takeaways.} The CNN reads each full frame and resizes it to $64\times64$ before two pooling stages and a global average pool. The hand fills only a small part of the frame, so those steps blur it into the torso, clothing, and background and the sign is lost. Augmentation leaves the result near chance: 3.2\% validation and 1.3\% test top-1 (4.3\% top-5), against 1.0\% chance. Isolating the hand before classification, for example by cropping, and replacing this from-scratch network with a pretrained video backbone are what this run points to next.
+
+%---------------------------------------------------------------------
+\subsection{Team contributions}
+%---------------------------------------------------------------------
+Cheng Yao: dataset loader, gradient-boosted trees, transformers \\
+Narelle: keypoint extraction, feature analysis, features and augmentation, MLP, GRU/LSTM
+
+%=====================================================================
+\section{Goals and Updated Timeline}\label{sec:goals}
+%=====================================================================
+\begin{center}\footnotesize
+\begin{tabular}{p{2.1cm}p{14cm}}
+\toprule
+Dates & Work \\
+\midrule
+Nov 7--16 & Appearance-based CNN on raw video frames, using a pretrained video backbone fine-tuned on Databricks
+            GPUs. Ablations: frozen vs.\ fine-tuned backbone, and number of sampled frames. We log GPU-hours and
+            inference latency. (Cheng Yao) \\
+Nov 7--14 & Cross-model ablations: test our main design choices (temporal pooling, augmentation) on every pose
+            model, so each choice is supported by more than one architecture; optional body-relative location from
+            MediaPipe Holistic. (Narelle) \\
+Nov 14--21 & Final comparison of all five model families (accuracy, parameters, training time, latency); error
+             analysis of confused signs; figures; write the full draft. (both) \\
+Nov 22--24 & Internal review, revisions and submission. (both) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Considerations.} Missing videos: Since we do not have access to the full set of 2038 videos, we will run every model using the same subset of 1013 videos, so the comparison stays fair.
+
+
+\end{document}
