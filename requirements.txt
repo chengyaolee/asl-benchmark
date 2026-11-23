@@ -3,3 +3,6 @@ xgboost
 scikit-learn
 torch
 opencv-python-headless
+torchvision
+matplotlib
+mediapipe==0.10.14

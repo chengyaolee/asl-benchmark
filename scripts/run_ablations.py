@@ -144,7 +144,7 @@ def run_tf_rung(name, raw, labels, *, location: bool, augment: bool, num_layers:
     va_y = np.asarray(labels["val"], np.int64)
     te_y = np.asarray(labels["test"], np.int64)
 
-    val_accs, test_accs, top5_accs, times = [], [], [], []
+    val_accs, test_accs, top5_accs, times, preds = [], [], [], [], []
     for seed in SEEDS:
         t0 = time.perf_counter()
         torch.manual_seed(seed)
@@ -196,6 +196,7 @@ def run_tf_rung(name, raw, labels, *, location: bool, augment: bool, num_layers:
         test_accs.append(float((te_logits.argmax(1) == te_y).mean()))
         top5_accs.append(cnn_mod._topk_accuracy(te_logits, te_y))
         times.append(time.perf_counter() - t0)
+        preds.append(te_logits.argmax(1).tolist())
 
     res = {
         "rung": name,
@@ -204,6 +205,8 @@ def run_tf_rung(name, raw, labels, *, location: bool, augment: bool, num_layers:
         "test_std": round(float(np.std(test_accs)) * 100, 1),
         "test_top5": round(float(np.mean(top5_accs)) * 100, 1),
         "train_s": round(float(np.mean(times)), 1),
+        "test_labels": te_y.tolist(),
+        "test_preds": preds,          # one list per seed, for error analysis
     }
     print(
         f"[TF ] {name:<42} | Val: {res['val_top1']:5.1f}% | Test: {res['test_top1']:5.1f}% "

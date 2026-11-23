@@ -1,0 +1,415 @@
+%% First draft (ICML 2025 style). Derived from ../main.tex (progress report), which stays unchanged.
+\documentclass{article}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\newcommand{\theHalgorithm}{\arabic{algorithm}}
+\usepackage[accepted]{icml2025}   % non-anonymous, as the course allows
+\usepackage{amsmath,amssymb}
+\usepackage[capitalize,noabbrev]{cleveref}
+
+% Placeholder markers: `grep -n "todo\|tbd" paper.tex` must be empty before submitting.
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\tbd}{\textcolor{red}{??}}
+\newcommand{\fig}[2]{\IfFileExists{#1}{\includegraphics[width=#2]{#1}}%
+  {\fbox{\parbox[c][3cm][c]{#2}{\centering\small\todo{\detokenize{#1}}}}}}
+
+\icmltitlerunning{Where vs.\ What: Landmarks and Pixels for Low-Data Sign Recognition}
+
+\begin{document}
+\twocolumn[
+\icmltitle{Where vs.\ What: Hand Landmarks and Pixels\\for Low-Data Isolated Sign Recognition}
+\begin{icmlauthorlist}
+\icmlauthor{Narelle Ho}{ucb}
+\icmlauthor{Cheng Yao Lee}{ucb}
+\end{icmlauthorlist}
+\icmlaffiliation{ucb}{CS289A, University of California, Berkeley}
+\icmlcorrespondingauthor{Cheng Yao Lee}{\todo{email}}
+\icmlkeywords{Sign language recognition, WLASL, pose estimation, video classification}
+\vskip 0.3in
+]
+\printAffiliationsAndNotice{}
+
+%=====================================================================
+\begin{abstract}
+%=====================================================================
+Isolated sign recognition maps a short video of one sign to a word. Two paradigms compete: classifiers on
+hand landmarks from an off-the-shelf pose estimator, and video networks that learn from pixels. We
+compare them on exactly the same 1{,}013 WLASL100 clips (7.5 training clips per sign), scoring every model
+on accuracy, training time, and inference latency over three seeds. On landmarks, a 167k-parameter
+transformer reaches 72.3\% validation and 66.7\% test top-1, and tree, MLP, and recurrent ladders show that
+temporal aggregation, not architecture, drives accuracy. On pixels, a from-scratch CNN stays at chance and a
+frozen Kinetics-pretrained R(2+1)D reaches only 20\%; fine-tuned, it reaches 37--43\% validation. To
+separate knowing \emph{where} the hands are from representing \emph{what} shape they make, we feed the
+backbone landmark-guided hand crops: localization changes accuracy by at most 5 points, within noise,
+leaving a gap of about 30 points that only the skeletal representation closes. Once landmarks are
+extracted, the transformer is 500$\times$ faster at inference with 188$\times$ fewer parameters, but
+extraction itself costs about 2\,s per clip on a CPU. We release code and discuss the limits of a
+half-sized benchmark with overlapping signers.
+\end{abstract}
+
+%=====================================================================
+\section{Introduction}
+%=====================================================================
+More than 70 million deaf people use a sign language \citep{wfd}, yet most speech and captioning tools
+assume a spoken utterance. Isolated sign recognition, naming the single sign performed in a short clip,
+is a narrow, measurable version of this gap and a building block for continuous recognition
+\citep{koller2020survey}.
+
+Two families of methods dominate. \emph{Pose-based} methods run a pretrained keypoint detector such as
+MediaPipe \citep{lugaresi2019mediapipe} and classify the resulting trajectory
+\citep{li2020wlasl,bohacek2022spoter,selvaraj2022openhands}. \emph{Appearance-based} methods learn from
+RGB frames with video backbones pretrained on action recognition \citep{carreira2017quo,tran2018closer}.
+Pose models are cheap and robust to background; pixel models see everything, including cues the detector
+misses. Published comparisons usually differ in data, preprocessing, and budget at the same time, so it
+is hard to tell \emph{why} one paradigm wins.
+
+We ask a narrower question in the low-data regime, where it matters most: \emph{is the landmark
+advantage due to localizing the hands or to the skeletal abstraction itself?} Our contributions:
+\begin{itemize}
+\item A controlled benchmark on the 1{,}013 WLASL100 clips still obtainable, with three-seed means,
+      training time, latency, and parameters for five model families on identical splits (\cref{sec:setup}).
+\item Ablation ladders for each pose model showing that temporal pooling or attention and augmentation,
+      not architecture, account for most of the accuracy (\cref{sec:pose}).
+\item A 2$\times$2 pixel study (frozen vs.\ fine-tuned backbone $\times$ full frame vs.\ landmark-guided hand
+      crop) that isolates the value of localization (\cref{sec:pixels}).
+\item An analysis of feature separability, signer leakage, and errors that qualifies what the
+      absolute numbers mean (\cref{sec:analysis}).
+\end{itemize}
+
+%=====================================================================
+\section{Related Work}
+%=====================================================================
+\textbf{Word-level sign datasets.} WLASL \citep{li2020wlasl} collects 21{,}083 videos of 2{,}000 ASL
+signs from the web; its 100-sign subset WLASL100 is a common benchmark. The original paper compares
+appearance (I3D) and pose (Pose-GRU, Pose-TGCN) baselines, reporting 65.9\%, 46.5\%, and 55.4\% top-1 on
+WLASL100. The Google ISLR competition \citep{kaggle2023islr} released landmark-only data at a much larger
+scale; we use WLASL because it provides raw video, which makes a pixel comparison possible.
+
+\textbf{Pose-based recognition.} Keypoint trajectories from OpenPose or MediaPipe
+\citep{zhang2020mediapipehands} are classified with GRUs \citep{li2020wlasl}, graph convolutions
+\citep{li2020wlasl,tunga2021gcnbert}, and transformers \citep{bohacek2022spoter}. OpenHands
+\citep{selvaraj2022openhands} standardizes pose pipelines across languages, and SignBERT
+\citep{hu2021signbert} pretrains a hand-model-aware encoder. These works scale model capacity; we instead
+hold the representation fixed and ablate aggregation and augmentation across four model families,
+including a tree ensemble \citep{chen2016xgboost}, which remains competitive on tabular data
+\citep{grinsztajn2022tree}.
+
+\textbf{Appearance-based recognition.} Inflated 3D CNNs \citep{carreira2017quo} and factorized
+R(2+1)D convolutions \citep{tran2018closer} pretrained on Kinetics \citep{kay2017kinetics} are standard
+backbones. \citet{li2020transferring} transfer knowledge from subtitled news signs; SAM-SLR
+\citep{jiang2021skeleton} fuses RGB, depth, and skeleton streams and crops around the hands. Unlike these
+systems, we do not fuse modalities: we use the landmark detector only to \emph{place} a crop, so pixels and
+landmarks share localization but differ in representation.
+
+%=====================================================================
+\section{Setup}\label{sec:setup}
+%=====================================================================
+\subsection{Data}
+We take the first 100 glosses of \texttt{WLASL\_v0.3.json} with the official split, which reproduces the
+published counts (2{,}038 videos; 1{,}442/338/258). Many source links are dead; the preprocessed Kaggle
+copy contains \textbf{1{,}013} of these videos. Every model in this paper is trained and scored on that
+same subset and split (\cref{tab:data}). With 7.5 training clips per sign, overfitting is the main
+difficulty. The 100-clip test set covers 72 signs and carries roughly $\pm$5 points of sampling error,
+so we select every configuration on validation accuracy and report test accuracy only for the selected
+ones. 31 of the 34 test signers also appear in training, as in the official split.
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lcc}
+\toprule
+ & Full WLASL100 & Available subset \\
+\midrule
+Videos (tr / val / test) & 1{,}442 / 338 / 258 & 748 / 165 / 100 \\
+Train clips / sign (min/mean/max) & 12 / 14.4 / 30 & 4 / 7.5 / 12 \\
+Signs present in test & 100 & 72 \\
+Signers (tr / val / test) & 91 / 69 / 56 & 60 / 41 / 34 \\
+Test signers also in train & 52 of 56 & 31 of 34 \\
+Median length (10--90th pct.) & -- & 65 (33--95) frames \\
+Frames with L / R / both hands & -- & 32\% / 60\% / 27\% \\
+\bottomrule
+\end{tabular}
+\caption{Dataset statistics. Hand detection by MediaPipe Hands.}
+\label{tab:data}
+\end{table}
+
+\subsection{Landmark representation}
+MediaPipe Hands \citep{zhang2020mediapipehands} gives 21 3D keypoints per hand per frame; we map its
+mirrored handedness labels to the signer's own left and right. Per frame and hand we center the points on
+the wrist and divide by palm length (wrist to middle-finger base), add a missing-hand flag, and
+optionally the wrist position in the frame, giving 132 values per frame (128 without location). Clips are
+resampled to $T{=}32$ frames. Sequence models read the $32\times132$ sequence; the tree and MLP read it
+flattened, or pooled over time (mean and standard deviation, 264 values, or means of four chunks).
+Features are standardized with training statistics. Training-time augmentation applies one random
+temporal crop (up to 10\% per end), rotation ($\pm15^\circ$), scale ($\pm10\%$), shift ($\pm5\%$), and
+point jitter per clip.
+
+\subsection{Models}
+\textbf{Gradient-boosted trees.} XGBoost \citep{chen2016xgboost} with depth-3 trees, learning rate 0.08,
+row/column subsampling 0.8/0.3, $\lambda{=}2$, up to 300 rounds with early stopping on validation, and
+five augmented copies of the training set.
+\textbf{MLP and linear probe.} Feed-forward networks on the flattened or pooled vector.
+\textbf{GRU / LSTM} \citep{cho2014gru,hochreiter1997lstm}. 128 hidden units, ablated over direction,
+readout (last state vs.\ temporal mean), and depth.
+\textbf{Transformer} \citep{vaswani2017attention}. A linear projection to $d{=}128$, LayerNorm, learned
+positional embeddings, 4 heads, feed-forward width 256, dropout 0.3, and a last-token or mean readout.
+\textbf{From-scratch CNN.} Three conv--BN--ReLU blocks on $8\times64\times64$ frames, averaged over time.
+\textbf{Pretrained video backbone.} R(2+1)D-18 \citep{tran2018closer} pretrained on Kinetics-400
+\citep{kay2017kinetics} (31.4M parameters), reading $T\times112\times112$ clips. We either freeze it and
+train a linear head on its 512-d pooled features, or fine-tune it end to end with the same augmentation
+applied to pixels (learning rates $10^{-4}$ backbone, $10^{-3}$ head, batch 8, fp16, at most 30 epochs
+with patience 6).
+The \emph{full-frame} input letterboxes each frame to a square; the \emph{hand-crop} input cuts one square
+per clip around the 2nd--98th percentile of all detected hand keypoints, enlarged by 25\%
+(\cref{fig:crops}). The crop uses only the \emph{location} of the landmarks, never their values.
+
+\textbf{Training and evaluation.} Neural models use AdamW (weight decay $10^{-2}$), label smoothing 0.1,
+and early stopping on validation. Every configuration is run with seeds 0, 1, 2; we report the mean
+validation and test top-1, test top-5, and the seed standard deviation, the mean training time, and
+batched inference latency per clip. All models run on one RTX 3060 GPU (XGBoost on CPU). Latency
+counts model inference only; it excludes video decoding for both paradigms and MediaPipe extraction for
+the landmark models, which we measure separately at 30\,ms per frame on CPU (about 2\,s for a median
+65-frame clip).
+
+\begin{figure}[t]
+\centering
+\fig{figs/crops.png}{\columnwidth}
+\caption{Full-frame (left) vs.\ landmark-guided hand-crop (right) inputs to the video backbone, four of
+16 frames per clip. In 16:9 videos the hands occupy a few pixels of a $112\times112$ full frame.}
+\label{fig:crops}
+\end{figure}
+
+%=====================================================================
+\section{Results}
+%=====================================================================
+\subsection{Main comparison}
+\cref{tab:main} reports the configuration of each family selected on validation, and
+\cref{fig:frontier} places them on an accuracy--latency plane. The landmark transformer is the most
+accurate model on validation (72.3\%) and on test (66.7\%), 29.5 validation points above the best pixel
+model, a fine-tuned R(2+1)D on hand crops. Given cached landmarks, it is also the cheapest: 188$\times$ fewer
+parameters, 57$\times$ shorter training, and 500$\times$ lower inference latency than the backbone. The
+caveat is extraction: MediaPipe Hands costs about 2\,s of CPU time per clip, two orders of magnitude more
+than the backbone's 12\,ms on a GPU, so the landmark pipeline is cheaper only when extraction is amortized
+or run on-device.
+
+\begin{table*}[t]
+\centering\footnotesize
+\begin{tabular}{llrcccrr}
+\toprule
+Family & Input & Params & Val top-1 & Test top-1 & Test top-5 & Train (s) & Latency (ms/clip) \\
+\midrule
+XGBoost (4-chunk pooled)       & landmarks & $\le$30k trees & 47.5 & 39.3 $\pm$ 1.2 & 73.7 & 86 & 0.13$^\dagger$ \\
+MLP (mean/std pooled)$^\ast$   & landmarks & --   & 63.6 & 60.0 & 84.3 & $<$60 & -- \\
+GRU (bidir., mean)$^\ast$      & landmarks & --   & 66.3 & 60.7 & 87.7 & $<$60 & -- \\
+LSTM (bidir., mean)$^\ast$     & landmarks & --   & 63.4 & 63.3 & 86.3 & $<$60 & -- \\
+Transformer (1 layer, mean)    & landmarks & 167k & \textbf{72.3} & 66.7 $\pm$ 1.9 & 86.3 & 29 & 0.02$^\dagger$ \\
+\midrule
+CNN from scratch (16 frames)   & pixels    & 107k & 3.4 & 1.3 $\pm$ 0.5 & 3.3 & 197 & 0.34$^\dagger$ \\
+R(2+1)D frozen, hand crop      & pixels + loc. & 31.4M$^\ddagger$ & 19.6 & 12.3 $\pm$ 1.9 & 22.3 & 13 & 12.0 \\
+R(2+1)D fine-tuned, full frame & pixels    & 31.4M & 37.4 & \textbf{38.7} $\pm$ 3.1 & 65.0 & 2034 & 11.8 \\
+R(2+1)D fine-tuned, hand crop  & pixels + loc. & 31.4M & \textbf{42.8} & 34.3 $\pm$ 3.4 & \textbf{65.7} & 1683 & 11.5 \\
+\midrule
+\multicolumn{8}{l}{\emph{Reference, full WLASL100 (2{,}038 clips) \citep{li2020wlasl}:} Pose-GRU 46.5, Pose-TGCN 55.4, I3D 65.9 test top-1.} \\
+\bottomrule
+\end{tabular}
+\caption{Best configuration per family, selected on validation; mean over 3 seeds ($\pm$ seed std of test
+top-1). $^\ast$From the MLP and RNN ladders (\cref{tab:pooled,tab:seq}). $^\dagger$Measured on the
+default configuration. $^\ddagger$51k trainable. Latency is batched model inference only; MediaPipe
+extraction adds about 30\,ms per frame on CPU to every landmark model.}
+\label{tab:main}
+\end{table*}
+
+%---------------------------------------------------------------------
+\subsection{Pose models: aggregation beats architecture}\label{sec:pose}
+%---------------------------------------------------------------------
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{lcccccc}
+\toprule
+ & \multicolumn{2}{c}{Linear} & \multicolumn{2}{c}{MLP} & \multicolumn{2}{c}{XGBoost} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}
+Rung & Val & Test & Val & Test & Val & Test \\
+\midrule
+1. Shape, 32 frames flat & 27.7 & 16.0 & 36.6 & 28.3 & 38.8 & 31.3 \\
+2. + wrist location      & 31.1 & 18.7 & 39.8 & 30.3 & 40.4 & 37.3 \\
+3. + augmentation        & 43.4 & 36.0 & 52.5 & 44.0 & 46.9 & 45.7 \\
+4a. + pool (mean, std)   & 52.3 & 52.7 & \textbf{63.6} & \textbf{60.0} & 39.6 & 41.3 \\
+4b. + pool (4 chunks)    & \textbf{56.2} & 45.0 & 62.2 & 53.0 & \textbf{47.5} & 39.3 \\
+5. 4a + velocity         & 48.9 & 46.0 & 57.0 & 53.3 & 37.6 & 40.3 \\
+\bottomrule
+\end{tabular}
+\caption{Ladder for models that read a fixed-length vector; top-1 (\%), mean over 3 seeds (seed std
+$\le$3.4). Bold: selected on validation.}
+\label{tab:pooled}
+\end{table}
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{lcccccc}
+\toprule
+ & \multicolumn{2}{c}{GRU} & \multicolumn{2}{c}{LSTM} & \multicolumn{2}{c}{Transformer} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}
+Rung & Val & Test & Val & Test & Val & Test \\
+\midrule
+0. Base, no augmentation   & 41.8 & 43.0 & 41.6 & 47.3 & 70.7 & 68.0 \\
+1. Base (1 layer, last)    & 51.3 & 53.3 & 50.5 & 50.0 & 71.9 & 70.0 \\
+2. + bidirectional         & 57.0 & 53.3 & 57.0 & 51.0 & -- & -- \\
+3. + mean over time        & \textbf{66.3} & \textbf{60.7} & \textbf{63.4} & \textbf{63.3} & \textbf{72.3} & \textbf{66.7} \\
+4. + second layer          & 66.3 & 65.7 & 60.0 & 56.0 & 70.1 & 67.0 \\
+5. 4 without location      & -- & -- & -- & -- & 67.3 & 62.7 \\
+\bottomrule
+\end{tabular}
+\caption{Ladder for sequence models on the $32\times132$ input; top-1 (\%), mean over 3 seeds (seed std
+$\le$5.0). Bold: selected on validation (ties go to the smaller model).}
+\label{tab:seq}
+\end{table}
+
+\cref{tab:pooled,tab:seq} add one design choice per rung.
+\textbf{Temporal aggregation is the largest single gain} for models that cannot align time themselves:
+mean/std pooling lifts the MLP from 44.0\% to 60.0\% test, and a temporal-mean readout lifts the GRU from
+53.3\% to 60.7\%. Models that see the whole sequence through attention are far less sensitive: the
+transformer is within noise of its best configuration even at the base rung without augmentation
+(70.7\% val).
+\textbf{Augmentation matters most for flat inputs} (+14--17 points for linear and MLP, +8 for XGBoost) and
+least for the transformer (+1.2 val).
+\textbf{Trees do not benefit from pooling}: XGBoost peaks on the augmented flat vector (45.7\% test),
+and pooling loses 4--6 test points, likely because axis-aligned splits on 100 classes with 7.5 clips per
+class cannot exploit the dense, correlated pooled features that a linear layer combines easily.
+\textbf{Once a model aggregates over time, architecture matters little}: the selected MLP, GRU, and LSTM
+are within 3.3 test points, inside the $\pm$5-point test noise; the transformer is best on validation by
+6 points over the next model.
+The selected neural pose models all exceed the original Pose-GRU and Pose-TGCN baselines trained on
+twice the data \citep{li2020wlasl}, though the protocols differ (\cref{sec:limits}).
+
+%---------------------------------------------------------------------
+\subsection{Pixel models: where vs.\ what}\label{sec:pixels}
+%---------------------------------------------------------------------
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lccccr}
+\toprule
+Rung & Val & Test & Top-5 & Train (s) \\
+\midrule
+CNN from scratch, $8\times64^2$       & 3.2 & 1.0 & 3.7 & 37 \\
+\quad + augmentation                  & 3.0 & 1.7 & 5.0 & 80 \\
+\quad + 16 frames                     & 3.4 & 1.3 & 3.3 & 197 \\
+\midrule
+R(2+1)D frozen, full, 8 frames        & 18.4 & 11.7 & 20.3 & 8 \\
+R(2+1)D frozen, full, 16 frames       & 18.0 & 10.7 & 19.7 & 14 \\
+R(2+1)D frozen, hand crop, 16         & 19.6 & 12.3 & 22.3 & 13 \\
+R(2+1)D fine-tuned, full, 16          & 37.4 & \textbf{38.7} & 65.0 & 2034 \\
+R(2+1)D fine-tuned, hand crop, 16     & \textbf{42.8} & 34.3 & \textbf{65.7} & 1683 \\
+\bottomrule
+\end{tabular}
+\caption{Pixel models; top-1 (\%), mean over 3 seeds (seed std $\le$3.4). Chance is 1\%. Frozen
+training time includes feature extraction.}
+\label{tab:pixels}
+\end{table}
+
+The from-scratch CNN stays at chance in every configuration (\cref{tab:pixels}): resizing a full frame to
+$64\times64$ blurs the hands into the torso and background, and 748 clips are too few to learn what to
+look at. A Kinetics-pretrained backbone changes this, but only when fine-tuned.
+\textbf{Frozen action features do not encode signs}: a linear head on frozen R(2+1)D features reaches
+18--20\% validation, and doubling the frames from 8 to 16 does not help (18.4 vs.\ 18.0), so temporal
+resolution is not the bottleneck. \textbf{Fine-tuning doubles accuracy} to 37--43\% validation and 65\%
+test top-5, at a cost of about 30 GPU-minutes per seed, against 30 seconds for the transformer.
+
+\textbf{Where vs.\ what.} If the landmark advantage came from localization, handing the backbone the
+hand region should close most of the gap. It does not. With a frozen backbone the crop adds 1.6 validation
+points; fine-tuned, it adds 5.4 validation points but \emph{loses} 4.4 test points, and pooled over all
+265 held-out clips the two inputs differ by under 2 points (39.6\% vs.\ 37.9\%). Against a 29.5-point
+validation gap to the transformer, localization explains at most about a sixth of the difference. The rest
+comes from representing the hand as a normalized skeleton: invariant to skin, clothing, lighting, and
+camera, and already disentangled into the shape features that our probes find carry most of the signal
+(\cref{sec:analysis}). Two caveats bound this conclusion. Two of six fine-tuning runs were still improving
+at the 30-epoch cap, so the pixel numbers are a lower bound; and our crop is one fixed box per clip that
+still contains the face and torso (\cref{fig:crops}), not per-frame hand patches.
+
+\begin{figure}[t]
+\centering
+\fig{figs/acc_vs_latency.png}{\columnwidth}
+\caption{Test top-1 vs.\ inference latency (log scale) for the selected configuration of each family;
+error bars are seed std.}
+\label{fig:frontier}
+\end{figure}
+
+%=====================================================================
+\section{Analysis}\label{sec:analysis}
+%=====================================================================
+\textbf{What the landmarks encode.} We probe the hand features with nearest-neighbor and logistic
+regression classifiers on val+test (265 clips; \cref{tab:probe}). Time-averaged features beat the flat
+sequence (41.1\% vs.\ 27.9\%), because signers start and move at different times, which is exactly the
+gain temporal aggregation delivers in \cref{sec:pose}. Hand shape alone reaches 26.0\%; location alone
+12.1\%, and adds only 1.9 points to shape. The features also encode the signer: the nearest training
+clip shares the signer (26.0\%) more often than the sign (22.3\%).
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lclc}
+\toprule
+Probe & Acc. & Probe & Acc. \\
+\midrule
+1-NN / 5-NN (cos.) & 22.3 / 15.8 & Linear, shape only & 26.0 \\
+Linear, flattened & 27.9 & Linear, location only & 12.1 \\
+Linear, time-avg. & \textbf{41.1} & NN same signer (chance) & 26.0 (5.1) \\
+\bottomrule
+\end{tabular}
+\caption{Feature separability on val+test (265 clips; \%, chance 1\%).}
+\label{tab:probe}
+\end{table}
+
+\textbf{Errors.} Taking each model's majority prediction over three seeds, the transformer misclassifies
+32 of the 100 test clips and the hand-crop backbone 69. The landmark errors are nearly a subset of the
+pixel errors: 25 of the transformer's 32 failures are also backbone failures, so the clips that defeat
+landmarks are hard for pixels too, while the backbone additionally fails on clips that landmarks solve.
+The transformer's most frequent confusion, \textsc{before}$\to$\textsc{enjoy} (6 of 9 possible errors,
+\cref{fig:confusions}) is consistent with two signs whose hand shapes are similar and which differ mainly
+in movement relative to the body, information that wrist-centered shape features do not carry. The backbone's confusions are spread
+thinly (at most 3 per pair) across visually unrelated signs, consistent with a model that has not yet
+learned a stable notion of hand shape from 748 clips. \todo{Narelle: check 2--3 example clips for the top
+pairs (occlusion, out-of-frame hands, failed detection).}
+
+\begin{figure*}[t]
+\centering
+\fig{figs/confusions.png}{0.8\textwidth}
+\caption{Most frequent test confusions (true $\to$ predicted), summed over three seeds, for the selected
+landmark transformer and the selected pixel model (fine-tuned R(2+1)D on hand crops).}
+\label{fig:confusions}
+\end{figure*}
+
+%=====================================================================
+\section{Conclusion}\label{sec:limits}
+%=====================================================================
+On the 1{,}013 obtainable WLASL100 clips, a 167k-parameter transformer on MediaPipe hand landmarks is the
+strongest model we trained, and temporal aggregation and augmentation, rather than architecture, explain
+most of the spread between pose models. A from-scratch CNN cannot learn from 7.5 clips per sign; a
+fine-tuned pretrained video backbone can, but stays about 30 validation points behind. Giving the backbone
+the hand location through a landmark-guided crop recovers at most a few of those points, so in this
+low-data regime the landmark advantage comes mainly from \emph{what} the skeleton represents, not from
+knowing \emph{where} to look. Once landmarks are cached, that representation is also about 500$\times$
+cheaper at inference; extraction, at about 2\,s per clip on CPU, is the dominant cost of the pipeline.
+
+\textbf{Limitations.} (i) \emph{Half the data:} only 1{,}013 of 2{,}038 clips are available, so absolute
+numbers are not comparable to published WLASL100 results, and the test set covers 72 of 100 signs.
+(ii) \emph{Small test set:} 100 clips give about $\pm$5 points of sampling error; we select on
+validation and report seed variation, but differences under $\sim$5 points between families are not
+significant. (iii) \emph{Signer overlap:} 31 of 34 test signers appear in training, and the features
+encode the signer, so accuracy on unseen signers is likely lower. (iv) \emph{Budgets differ:} the backbone
+had a 30-epoch cap that two runs reached while still improving, one backbone, and a single crop policy;
+MLP and RNN rows come from separate runs without latency measurements.
+
+\textbf{Future work.} Signer-disjoint splits; body and face landmarks (MediaPipe Holistic) for location
+relative to the body; fusing the hand-crop backbone with landmarks; and recovering the missing videos
+from their original sources.
+
+\textbf{Contributions.} Cheng Yao Lee: data loader, XGBoost, transformer, video backbones, comparison, paper.
+Narelle Ho: keypoint extraction, feature analysis, features and augmentation, MLP, GRU/LSTM.
+Code: \url{https://github.com/chengyaolee/asl-benchmark}.
+
+\bibliography{refs}
+\bibliographystyle{icml2025}
+
+\end{document}
