@@ -1,0 +1,454 @@
+%% Draft v2 (ICML 2025 style): Approach, Evaluation, Ablations only. Rewritten around the information ladder in
+%% ../UPDATED PLAN.md. paper.tex (the older draft) is not edited. Abstract, Introduction, Related Work, Conclusion come last.
+%% Red text marks numbers that are still running; `grep -n "pend\|todo\|tbd" paper_v2.tex` must be empty before submitting.
+\documentclass{article}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\newcommand{\theHalgorithm}{\arabic{algorithm}}
+\usepackage[accepted]{icml2025}   % non-anonymous, as the course allows
+\usepackage{amsmath,amssymb}
+\usepackage[capitalize,noabbrev]{cleveref}
+
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\tbd}{\textcolor{red}{??}}
+\newcommand{\pend}{\textcolor{red}{pending}}
+\newcommand{\fig}[2]{\IfFileExists{#1}{\includegraphics[width=#2]{#1}}%
+  {\fbox{\parbox[c][3cm][c]{#2}{\centering\small\todo{\detokenize{#1}}}}}}
+
+\icmltitlerunning{Pixels or Keypoints? An Information Ladder for Low-Data Sign Recognition}
+
+\begin{document}
+\twocolumn[
+\icmltitle{Pixels or Keypoints? An Information Ladder\\for Low-Data Isolated Sign Recognition}
+\begin{icmlauthorlist}
+\icmlauthor{Narelle Ho}{ucb}
+\icmlauthor{Cheng Yao Lee}{ucb}
+\end{icmlauthorlist}
+\icmlaffiliation{ucb}{CS289A, University of California, Berkeley}
+\icmlcorrespondingauthor{Cheng Yao Lee}{\todo{email}}
+\icmlkeywords{Sign language recognition, WLASL, pose estimation, video classification}
+\vskip 0.3in
+]
+\printAffiliationsAndNotice{}
+
+\begin{abstract}
+\todo{written last}
+\end{abstract}
+
+%% Introduction and Related Work: written after the results are final.
+
+%=====================================================================
+\section{Approach}\label{sec:approach}
+%=====================================================================
+We ask whether, with only a few training videos per sign, a recognizer should learn from \emph{pixels} or
+from a \emph{skeleton}: keypoints found by a pretrained hand detector. Published comparisons change the data,
+the preprocessing and the model at the same time, so a score difference does not say where it comes from.
+We therefore build an \textbf{information ladder}. Every step changes one thing, the same videos and the same
+16 frames per video are used throughout, and the step sizes show what matters (\cref{fig:ladder}).
+
+\begin{figure*}[t]
+\centering
+\fig{figs/ladder_diagram.png}{0.86\textwidth}
+\caption{The information ladder. Orange: the network reads pixels (ResNet-18 features of each frame, then a small
+transformer). Blue: the same small transformer reads keypoints. Arrows name what changes: where the network looks,
+whether it knows where the hand is, whether the hand is given as pixels or as keypoints, and whether the upper body is
+included. Labels S3, S5, X1, S1, X2 are used in the tables.}
+\label{fig:ladder}
+\end{figure*}
+
+\subsection{Task and data}
+We use WLASL100 \citep{li2020wlasl}: isolated signs, 100 words. Only 1{,}013 of the 2{,}038 videos could be
+obtained, so all results use the official split restricted to them: 748 training, 165 validation and 100 test videos
+(7.5 training videos per sign on average). The median video is 656$\times$400 pixels and 65 frames long. The test set
+covers 72 of the 100 signs, and 97 of its 100 videos are by signers who also appear in training
+(\cref{sec:limits}). Choices (the best training epoch) are made on the validation videos only; test videos are used
+for reporting.
+
+\subsection{Shared input}\label{sec:shared}
+Each video is reduced once to \textbf{16 evenly spaced frames}, resized to 224$\times$224 with black bars so the
+shape is kept. Both groups use exactly these frames.
+\begin{itemize}
+\item \textbf{Pixels.} The 224$\times$224 frame, or two 112$\times$112 crops per frame, one per hand, cut from it.
+      A crop is a square of 1.6 times the hand's bounding box (at least 32 pixels), enlarged to 112$\times$112.
+      The crops are raw pixels; nothing is drawn on them.
+\item \textbf{Keypoints.} MediaPipe Hands \citep{lugaresi2019mediapipe,zhang2020mediapipehands} is run on each of the 16
+      frames separately, with no tracking and no neighbouring frames, so the keypoints cannot contain anything the
+      pixel model cannot see. Each hand has 21 points (x, y, depth). In 23\% of the frames both hands are found,
+      in 41\% one hand, in 36\% none.
+      For the upper body (step X2) MediaPipe Pose \citep{bazarevsky2020blazepose} is run the same way; we keep nine
+      points (nose, shoulders, elbows, wrists, hips). A person is found in 98.5\% of frames, and in at least some frame
+      of every video.
+\end{itemize}
+The crops use the Hands detector to decide \emph{where} to cut, so the crop models are pose-guided pipelines too;
+their network sees only pixels.
+
+\subsection{Keypoint models}
+Each frame becomes a vector of 132 numbers: for each hand, the 21 points relative to the wrist and divided by the palm
+length (126), a ``hand found'' flag per hand (2), and the position of each wrist in the frame (4). A hand that is
+missing is zero with its flag set. In step X2 we append the nine body points relative to the shoulder midpoint and
+divided by shoulder width (18 numbers) and a ``body found'' flag. Features are standardised with training statistics.
+The \textbf{small transformer} \citep{vaswani2017attention} has one layer, width 128, 4 heads, feed-forward width 256,
+dropout 0.3, learned position embeddings over the 16 frames, mean over frames, and a linear layer to 100 classes
+(165k parameters). It is trained from scratch.
+
+\subsection{Pixel models}
+\textbf{ResNet-18} \citep{he2016deep} pretrained on ImageNet \citep{deng2009imagenet} turns each frame, or each hand crop
+(the same weights for both hands), into 512 numbers. The 16 vectors, plus the hand-found flags where used, go through
+the \emph{same} transformer as above (one layer, width 128). The whole network is fine-tuned on our 748 videos
+(11.4 to 11.5M parameters). In step X1 the crop model also receives the same four wrist-position numbers as the keypoint
+model, standardised, zeroed when the hand is missing, and given the same random rotation, zoom and shift as the keypoints.
+\textbf{I3D} \citep{carreira2017quo} is the network used for the WLASL video baseline \citep{li2020wlasl}, pretrained on
+Kinetics \citep{kay2017kinetics}; we fine-tune it on the 16 whole frames (12.4M parameters).
+
+\subsection{Training and statistics}
+All models: label smoothing 0.1 \citep{szegedy2016rethinking}, AdamW \citep{loshchilov2019decoupled} with weight decay
+0.01, gradient clipping 1.0, the best epoch chosen on validation accuracy, three seeds (0, 1, 2).
+Keypoint models: learning rate $10^{-3}$, batch 64, up to 200 epochs with patience 40. Fine-tuned pixel models: learning
+rate $10^{-4}$ for the pretrained network and $10^{-3}$ for the transformer and new layers, cosine schedule, mixed
+precision, batch 8, up to 40 epochs with patience 10. Augmentation is one random transform per video: up to 10\% of
+frames trimmed from each end, rotation $\pm15^\circ$, zoom $\pm10\%$, shift $\pm5\%$, small noise; keypoints get the same
+transform in coordinate form. There is no horizontal flip, which would swap the signing hand. \emph{No hyper-parameter
+search}: one recipe per group, so differences between rows are not tuning differences within a group, and tuning
+across groups is a stated limitation (\cref{sec:limits}).
+
+We report the number of the 100 test videos classified correctly (``accuracy''), the share with the right sign among the
+five best guesses (top-5), and the spread over seeds. The seed spread ignores the uncertainty from having only 100 test
+videos (about $\pm$10 points for one accuracy), so \textbf{differences between models are given with a paired 95\% interval}:
+the score of a video is the share of seeds that got it right, the difference is averaged over the same 100 videos, and the
+interval is a bootstrap over videos with 10{,}000 draws \citep{efron1994introduction}. Three comparisons were fixed
+before the new runs finished (``primary''): keypoints vs.\ crops with the same location (S1 vs.\ X1), the value of location
+for the crop model (X1 vs.\ S5), and the value of the upper body for the keypoint model (X2 vs.\ S1). All others are
+exploratory.
+
+%=====================================================================
+\section{Evaluation}\label{sec:eval}
+%=====================================================================
+\subsection{Main comparison}
+\begin{table*}[t]
+\centering\small\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llcccrr}
+\toprule
+Label & What the network reads & Test (\%) & Top-5 (\%) & Parameters & Training per seed (s) \\
+\midrule
+\multicolumn{6}{l}{\emph{Pixels: ResNet-18 (ImageNet) fine-tuned, then the small transformer}} \\
+S3 & whole 224$\times$224 frame                  & 24.3 $\pm$ 1.9 & 54.0 & 11.4M & 2058 \\
+S5 & two hand crops                                & 40.3 $\pm$ 2.1 & 68.7 & 11.5M & 942 \\
+X1 & two hand crops + wrist location              & 41.7 $\pm$ 1.2 & 71.7 & 11.5M & 958 \\
+\multicolumn{6}{l}{\emph{Pixels: video network}} \\
+I3D & whole frames, 16 (Kinetics, fine-tuned)      & 26.3 $\pm$ 0.5 & 58.7 & 12.4M & 1371 \\
+\midrule
+\multicolumn{6}{l}{\emph{Keypoints: the small transformer, trained from scratch}} \\
+S1 & hand keypoints + wrist location               & 59.0 $\pm$ 2.9 & 83.7 & 0.16M & 20 \\
+X2 & hand + upper-body keypoints                   & 65.0 $\pm$ 1.6 & 85.0 & 0.17M & 23 \\
+\bottomrule
+\end{tabular}
+\caption{Main results on the 100 test videos (mean $\pm$ seed standard deviation over 3 seeds). All rows use the same 748
+training and 165 validation videos and the same 16 frames. Training time is on one RTX 3060 and excludes keypoint
+extraction. A random guess scores 1.}
+\label{tab:main}
+\end{table*}
+
+\begin{figure}[t]
+\centering
+\fig{figs/ladder_bars.png}{0.94\columnwidth}
+\caption{Accuracy of each ladder step on the 100 test videos, with the 95\% bootstrap interval for one model (it is wide:
+about $\pm$9 points). Compare models with the paired intervals in \cref{tab:paired}, which are narrower.}
+\label{fig:bars}
+\end{figure}
+
+\begin{table*}[t]
+\centering\small\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrr}
+\toprule
+Comparison (A $-$ B) & Difference (points) & 95\% interval \\
+\midrule
+\input{tables/paired}
+\bottomrule
+\end{tabular}
+\caption{Paired differences in accuracy on the same 100 test videos, with 95\% bootstrap intervals over videos. Bold: the
+three primary comparisons, fixed before the new runs finished. An interval that contains 0 means the difference is not
+detectable at this sample size; it does not show that the models are equal.}
+\label{tab:paired}
+\end{table*}
+
+\cref{tab:main} and \cref{fig:bars} give the ladder. On the same 16 frames, fine-tuned pixel models are clearly behind
+the keypoint transformer. Cutting out the hands helps a ResNet by 16.0 points (95\% interval 9.0 to 23.3) over the whole
+frame, so \emph{where} the network looks matters a lot. The keypoint model S1 is 18.7 points ahead of the crop model S5 (9.7 to 27.3), but S1 also knows where the hands are
+in the frame and S5 does not. The primary comparison, keypoints against crops that also know the hand position (S1 vs.\ X1),
+removes that difference: S1 is still ahead of X1 by 17.3 points (95\% interval 9.0 to 25.3), the first primary
+comparison. Giving the crop model the wrist location changes its accuracy by only 1.3 points ($-3.7$ to $+6.3$), the second
+primary comparison, so at this sample size location does not explain the gap. Adding the upper body lifts the keypoint model by 6.0 points (1.0 to 11.3), so
+the hands alone leave information unused. The video network I3D, which reads the whole frame, scores 26.3 (top-5 58.7),
+close to the whole-frame ResNet (24.3) and well below the keypoint model; keypoints are ahead of I3D by 32.7 points (22.3 to 43.0).
+The keypoint model with the upper body is 23.3 points ahead of the crop model with location (15.3 to 31.3). \textbf{What these numbers do not show}: MediaPipe was trained for hands and
+people, while the ResNet and I3D weights come from everyday photos and human actions, so the comparison is between pose
+\emph{pipelines} and pixel \emph{pipelines}, not between representations in general.
+
+\subsection{Cost}
+Training the keypoint transformer takes about 20 seconds per seed, against 958 s for the crop ResNet with location, 1371 s
+for I3D and 2058 s for the whole-frame ResNet (one RTX 3060, keypoint extraction excluded). Training is not the whole
+cost, because keypoints must be extracted from every video. \cref{tab:speed} times everything from the video file to the
+answer, one video at a time with nothing cached: reading and resizing the frames, MediaPipe where the pipeline needs it,
+cropping, and the network. MediaPipe runs on the CPU (AMD Ryzen 5 5500), the networks on the GPU (RTX 3060); the networks
+are untrained copies of the same architecture, since speed does not depend on the weights.
+
+\begin{table}[t]
+\centering\small\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{lccccc}
+\toprule
+Pipeline & Test & Decode & MediaPipe & Network & Total \\
+\midrule
+Whole frame, ResNet (S3)           & 24.3 & 82 & --   & 21 & 102 \\
+I3D, whole frames                  & 26.3 & 82 & --   & 19 & 101 \\
+Hand crops + location, ResNet (X1) & 41.7 & 82 & 541  & 12 & 635 \\
+Keypoints, hands (S1)              & 59.0 & 82 & 541  & 1  & 624 \\
+Keypoints, hands + body (X2)       & 65.0 & 82 & 1272 & 1  & 1356 \\
+Keypoints, tracked, full resolution & 67.0 & -- & 2122 & 1  & 2123 \\
+\bottomrule
+\end{tabular}
+\caption{End-to-end time per video in milliseconds (mean over 99 test videos; the first video is a warm-up). ``MediaPipe''
+for X2 is Hands (541) plus Pose (731); for the tracked row it is one pass over every frame of the full-resolution video,
+which includes decoding. ``Network'' includes cropping.}
+\label{tab:speed}
+\end{table}
+
+MediaPipe, not the network, is the cost: the keypoint transformer needs 1.3 ms, against 10.5 ms for the crop ResNet and
+20.5 ms for the whole-frame ResNet, but extracting the keypoints takes 541 ms. The keypoint pipeline is therefore about six
+times slower end to end than the whole-frame ResNet (624 vs.\ 102 ms) while scoring 35 points higher, and the crop ResNet
+costs the same as the keypoint pipeline (635 vs.\ 624 ms) because its crops also need MediaPipe, while scoring 17 points
+lower. The upper body doubles the cost (1356 ms), and tracking over the full-resolution video more than triples it
+(2123 ms). These times are for a Python CPU implementation of MediaPipe at batch size one; an optimised or GPU deployment
+would change the absolute numbers (\cref{fig:time}).
+
+\begin{figure}[t]
+\centering
+\fig{figs/acc_vs_time.png}{0.94\columnwidth}
+\caption{Test accuracy against end-to-end time per video (log scale), from \cref{tab:speed}. Keypoint pipelines (blue)
+are more accurate but pay for MediaPipe; the pixel pipelines that need no detector (orange, left) are fast and less
+accurate.}
+\label{fig:time}
+\end{figure}
+
+\subsection{What the models see}
+\cref{fig:examples} shows one test video as each group sees it.
+
+\begin{figure}[t]
+\centering
+\fig{figs/examples.png}{0.86\columnwidth}
+\caption{One test video, frames 2, 6, 10 and 14 of the 16. Top: the shared frame. Middle: the two hand crops (left hand
+above right hand). Bottom: the keypoints found in that frame (hands in orange and green, upper body in grey).}
+\label{fig:examples}
+\end{figure}
+
+\subsection{Where the models differ}
+Counting a video as correct if a model gets it right in at least two of its three seeds, the crop ResNet with location (X1)
+is right on 41 of the 100 test videos and the keypoint model (S1) on 60. They share 36 of these: the keypoint model gets 24
+videos the crop model misses, the crop model gets only 5 that the keypoint model misses, and 35 videos neither gets right. So
+the crop model's correct videos are nearly a subset of the keypoint model's. The pattern is the same against the whole-frame
+ResNet (44 videos only the keypoint model gets, 4 only the ResNet) and I3D (43 and 5), and the keypoint model with the upper
+body gets 29 videos that the crop model misses, against 3 the other way. The 100 videos cover 72 signs with at most three
+videos each, so we do not report per-sign results.
+
+%=====================================================================
+\section{Ablations}\label{sec:ablations}
+%=====================================================================
+Ablations from the same matched setup are in \cref{tab:kp-abl,tab:pix-abl,tab:shuffle}; results from the earlier,
+different protocol are kept apart in \cref{tab:earlier}. Two further tables (the graph network's twelve settings and the
+design choices of the earlier keypoint models) are in the appendix (\cref{tab:graph,tab:design}).
+
+\subsection{What the keypoint model is given}
+\begin{table}[t]
+\centering\small\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lcccc}
+\toprule
+Variant & Test (\%) & Top-5 & $\Delta$ vs.\ S1 & 95\% interval \\
+\midrule
+S1: hands + wrist location (base)        & 59.0 $\pm$ 2.9 & 83.7 & -- & -- \\
+no wrist location                         & 57.0 $\pm$ 2.9 & 81.0 & $-2.0$ & $-7.0$ to $+3.0$ \\
+no depth coordinate                       & 62.3 $\pm$ 0.9 & 87.0 & $+3.3$ & $-1.0$ to $+7.7$ \\
++ upper-body points (X2)                   & 65.0 $\pm$ 1.6 & 85.0 & $+6.0$ & $+1.0$ to $+11.3$ \\
+tracked, full-resolution keypoints        & 67.0 $\pm$ 2.4 & 88.3 & $+8.0$ & $+2.0$ to $+14.3$ \\
+graph network instead of transformer     & 26.7 $\pm$ 1.2 & 51.0 & -- & -- \\
+\bottomrule
+\end{tabular}
+\caption{Keypoint-side ablations (16 frames, 3 seeds). The last two keypoint rows change the extraction, not the model:
+tracking hands through the full-resolution video lets MediaPipe use neighbouring frames and more pixels. The graph
+network follows Pose-TGCN \citep{li2020wlasl} on the 42 hand points with our own width and depth (best of six settings
+by validation accuracy).}
+\label{tab:kp-abl}
+\end{table}
+
+Only the upper body gives a detectable gain among the inputs of the matched keypoint model. Wrist location and depth
+change the score by less than the interval: with 100 test videos we cannot tell whether they help. Tracking and full
+resolution are worth about 8 points to the keypoint side, so a comparison that gives the skeleton full-resolution
+tracked video and the images a shrunken frame overstates the skeleton's lead by about that much; this is why the
+matched protocol was needed. Using 32 instead of 16 frames does not change the tracked-keypoint transformer (66.7 $\pm$ 1.9 with 32 frames in the
+earlier run, 67.0 $\pm$ 2.4 with 16; same configuration, so the 16 frames used here lose nothing). The graph network is much
+weaker than the transformer on the same keypoints (26.7 vs.\ 59.0). Across its twelve settings (\cref{tab:graph}), our
+normalised features beat the raw coordinates the original used at every depth, tracked keypoints beat matched ones by
+11 to 17 points (the transformer gained 8), more blocks do not help consistently, and several settings are unstable
+across seeds (standard deviations up to 11 points).
+
+\subsection{Choices in the picture models}
+\begin{table}[t]
+\centering\small\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lcc}
+\toprule
+Variant (ResNet-18) & Test (\%) & Top-5 \\
+\midrule
+whole frame, network frozen                       & 15.7 $\pm$ 1.7 & 30.7 \\
+whole frame, fine-tuned (S3)                      & 24.3 $\pm$ 1.9 & 54.0 \\
+hand crops, frozen, box borrowed when missed      & 15.7 $\pm$ 0.5 & 39.0 \\
+hand crops, frozen, black when missed             & 24.0 $\pm$ 5.1 & 48.0 \\
+hand crops, fine-tuned (S5)                        & 40.3 $\pm$ 2.1 & 68.7 \\
+hand crops + wrist location, fine-tuned (X1)       & 41.7 $\pm$ 1.2 & 71.7 \\
+\bottomrule
+\end{tabular}
+\caption{Picture-side ablations (16 frames, 3 seeds). ``Frozen'' keeps the ImageNet weights and trains only the
+transformer on top. When MediaPipe finds no hand, the crop either reuses the box from the nearest frame where the hand
+was found, or is black.}
+\label{tab:pix-abl}
+\end{table}
+
+Fine-tuning helps the whole-frame ResNet by 8.7 points (2.0 to 15.3) and the crop ResNet by 24.7 (17.0 to 32.3), and
+hand crops beat the whole frame once the network is fine-tuned (+16.0, 9.0 to 23.3). Replacing a borrowed box by a black
+crop raises the frozen ResNet from 15.7 to 24.0 (+8.3, 2.0 to 15.0): a borrowed box shows whatever lies where the hand
+used to be. Adding wrist location to the fine-tuned crops (X1) changes the score by 1.3 points ($-3.7$ to $+6.3$), not detectable;
+for the keypoint model the same information was also not detectable ($-2.0$ when removed).
+
+\subsection{Is movement used?}
+\begin{table}[t]
+\centering\small\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lccc}
+\toprule
+Model & Normal order & Shuffled & Change \\
+\midrule
+S1: keypoints, hands + location     & 59.0 & 62.1 & $+3.1$ \\
+keypoints, no wrist location        & 57.0 & 56.8 & $-0.2$ \\
+X2: keypoints, hands + upper body   & 65.0 & 65.1 & $+0.1$ \\
+X1: hand crops + location            & 41.7 & 39.9 & $-1.8$ \\
+\bottomrule
+\end{tabular}
+\caption{Test accuracy (\%) with the 16 frames of every test video in their normal order or shuffled (mean over three fixed
+shuffles, the same for all models). The model is trained on ordered videos and is not retrained.}
+\label{tab:shuffle}
+\end{table}
+
+Shuffling the frames does not lower the keypoint models' accuracy (\cref{tab:shuffle}), so as trained they depend on
+which hand poses occur, not on their order. The crop ResNet loses 1.8 points, which is within the noise of 100 videos (we
+did not compute an interval for it). This is a one-sided check: shuffled videos differ from the training data, so a
+drop would have been hard to interpret, and no drop does not show that order carries no information for a model that
+is trained to use it.
+
+\subsection{Earlier protocol and other model types}
+\begin{table}[t]
+\centering\small\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lcc}
+\toprule
+Model (earlier protocol) & Test (\%) & Val (\%) \\
+\midrule
+\multicolumn{3}{l}{\emph{Keypoints from tracked full-resolution video, 32 frames}} \\
+XGBoost, best on validation                         & 39.3 $\pm$ 1.2 & 47.5 \\
+MLP, best on validation$^\ast$                       & 60.0 & 63.6 \\
+GRU, best on validation$^\ast$                       & 60.7 & 66.3 \\
+LSTM, best on validation$^\ast$                      & 63.3 & 63.4 \\
+transformer, best on validation (mean over frames)    & 66.7 $\pm$ 1.9 & 72.3 \\
+\quad base (one layer, last token, no augmentation)   & 68.0 $\pm$ 1.4 & 70.7 \\
+\quad base with augmentation                          & 70.0 $\pm$ 2.2 & 71.9 \\
+\quad two layers                                      & 67.0 & 70.1 \\
+\quad two layers, no wrist location                   & 62.7 & 67.3 \\
+\midrule
+\multicolumn{3}{l}{\emph{Pixels, 112$\times$112, 16 frames, hands found in the full-resolution video}} \\
+ResNet-18, hand crops, fine-tuned                    & 47.0 $\pm$ 3.7 & 46.5 \\
+ResNet-18, whole frame, fine-tuned                   & 15.7 $\pm$ 1.2 & 24.6 \\
+R(2+1)D \citep{tran2018closer}, whole frame, fine-tuned & 38.7 $\pm$ 3.1 & 37.4 \\
+R(2+1)D, one crop per video, fine-tuned              & 34.3 $\pm$ 3.4 & 42.8 \\
+\bottomrule
+\end{tabular}
+\caption{Results from the earlier protocol, in which the keypoints came from full-resolution video (with tracking) and the
+pixel models read 112$\times$112 frames or crops. They are \emph{not} comparable with \cref{tab:main}.
+$^\ast$Narelle's models, each the mean over three seeds (seed standard deviation up to 5.0); her per-video
+predictions are not in this repository, so they are not in the paired comparisons. The R(2+1)D crop row fine-tuned longer with three learning rates
+($3\times10^{-5}$, $10^{-4}$, $3\times10^{-4}$) gave 27, 46 and 36 on the test videos in one seed each, so tuning
+changes a video network by more than the gaps between most rows here.}
+\label{tab:earlier}
+\end{table}
+
+Under the earlier protocol, mean pooling or attention over time was what mattered most for keypoint models; once a
+model aggregates over time, the transformer, GRU, LSTM and MLP are within noise of each other, and XGBoost on the
+flattened sequence is the weakest (\cref{tab:earlier}). Hand crops cut from full-resolution video help a fine-tuned
+ResNet more than crops cut from the 224-pixel frame (47.0 vs.\ 40.3, in different protocols and so not a tested
+difference), and the strongest video-network result needed a learning-rate search, which we did not apply to the
+ResNet or I3D rows of \cref{tab:main}.
+
+\cref{tab:design} (appendix) lists the design choices of the earlier keypoint models. \textbf{Augmentation} helps models
+that read a flat vector most (+8 to +17 points for the linear model, MLP and XGBoost) and the transformer least (+2).
+\textbf{Temporal aggregation} is the largest gain for the MLP (+16), linear model (+17), LSTM (+12) and GRU (+7), but costs
+XGBoost 4 points and the transformer 3 (for the transformer, validation accuracy rises while test accuracy falls, so we do
+not read it as a loss).
+\textbf{Wrist location} adds 2 to 6 points for every model that was tested with and without it. For the pixel models of
+that protocol, the frozen R(2+1)D scores 10.7 to 12.3 whatever the number of frames (8 or 16) or the input (whole frame
+or one crop), and a small ConvNet trained from scratch stays between 1.0 and 1.7, which is chance (1): without pretraining the
+pixel models learn nothing.
+
+\subsection{Limits that bear on these results}\label{sec:limits}
+One recipe per group and no search; 16 frames of 224$\times$224 (hands about 24 pixels wide); hands (and in X2
+the upper body) but no face; a 100-video test set that contains 72 of the 100 signs, with 97 of its videos by signers
+seen in training; half of WLASL100; MediaPipe is itself trained on hands, the pixel networks are not. One test video (24960, ``go'') is an exact copy of a training video (24961): its frames are pixel-identical. Comparing every
+test video with every training and validation video by frame content found no other pair with the same sign. We kept the
+official test set, so this can raise a score by at most one point. Narelle's MLP, GRU and LSTM were trained with an
+earlier recipe, and their per-video predictions are not available here for paired comparisons.
+
+\bibliography{refs}
+\bibliographystyle{icml2025}
+
+\appendix
+\section{Additional ablation tables}
+
+\begin{table}[h]
+\centering\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{llccc}
+\toprule
+Keypoints & Input & 2 blocks & 4 blocks & 8 blocks \\
+\midrule
+matched  & raw coordinates & 8.3 $\pm$ 3.9 (13.5)  & 18.3 $\pm$ 1.2 (20.2) & 14.0 $\pm$ 1.4 (19.8) \\
+matched  & normalised      & \textbf{26.7 $\pm$ 1.2 (30.5)} & 22.3 $\pm$ 11.0 (30.3) & 22.7 $\pm$ 7.4 (29.3) \\
+tracked  & raw coordinates & 25.3 $\pm$ 4.6 (31.7) & 30.7 $\pm$ 0.5 (36.0) & 31.3 $\pm$ 0.5 (40.0) \\
+tracked  & normalised      & 37.3 $\pm$ 2.9 (40.6) & 36.3 $\pm$ 0.5 (43.4) & \textbf{39.3 $\pm$ 4.0 (45.7)} \\
+\bottomrule
+\end{tabular}
+\caption{The graph network (Pose-TGCN style) in its twelve settings: test accuracy (\%) $\pm$ seed standard deviation, with
+validation accuracy in brackets. Bold: the setting chosen on validation accuracy for each kind of keypoints. ``Matched''
+keypoints come from the shared 224-pixel frames; ``tracked'' from MediaPipe tracking through the full-resolution video. Raw
+coordinates are the 2D image coordinates, as in the original; ``normalised'' are the features of the transformer. Parameters:
+0.16M, 0.27M and 0.50M for 2, 4 and 8 blocks (0.16M, 0.28M, 0.51M normalised).}
+\label{tab:graph}
+\end{table}
+
+\begin{table}[h]
+\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lccc}
+\toprule
+Model (earlier protocol) & Augmentation & Temporal aggregation & Wrist location \\
+\midrule
+Linear$^\ast$      & 18.7 $\to$ 36.0 & 36.0 $\to$ 52.7 & 16.0 $\to$ 18.7 \\
+MLP$^\ast$         & 30.3 $\to$ 44.0 & 44.0 $\to$ 60.0 & 28.3 $\to$ 30.3 \\
+XGBoost            & 37.3 $\to$ 45.7 & 45.7 $\to$ 41.3 & 31.3 $\to$ 37.3 \\
+GRU$^\ast$         & 43.0 $\to$ 53.3 & 53.3 $\to$ 60.7 & -- \\
+LSTM$^\ast$        & 47.3 $\to$ 50.0 & 51.0 $\to$ 63.3 & -- \\
+Transformer        & 68.0 $\to$ 70.0 & 70.0 $\to$ 66.7 & 62.7 $\to$ 67.0 \\
+\bottomrule
+\end{tabular}
+\caption{Design choices of the earlier keypoint models (tracked full-resolution keypoints, 32 frames): test accuracy (\%)
+before $\to$ after adding the choice, one choice at a time, mean over three seeds. Augmentation: random rotation, zoom,
+shift and trimming of the clip. Temporal aggregation: mean and standard deviation over time (linear, MLP, XGBoost), a mean
+over time instead of the last step (GRU, LSTM, transformer). Wrist location: the four wrist-position numbers (for the
+transformer, with two layers). $^\ast$Narelle's models.}
+\label{tab:design}
+\end{table}
+
+\end{document}

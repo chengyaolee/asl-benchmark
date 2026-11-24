@@ -1,0 +1,16 @@
+\textbf{Keypoint transformer, hands (matched)} $-$ ResNet, hand crops + wrist location, fine-tuned & $+17.3$ & $+9.0$ to $+25.3$ \\
+\textbf{ResNet, hand crops + wrist location, fine-tuned} $-$ ResNet, hand crops, fine-tuned & $+1.3$ & $-3.7$ to $+6.3$ \\
+\textbf{Keypoint transformer, hands + upper body} $-$ Keypoint transformer, hands (matched) & $+6.0$ & $+1.0$ to $+11.3$ \\
+\midrule
+Keypoint transformer, hands (matched) $-$ ResNet, hand crops, fine-tuned & $+18.7$ & $+9.7$ to $+27.3$ \\
+Keypoint transformer, hands (matched) $-$ ResNet, whole frame, fine-tuned & $+34.7$ & $+25.0$ to $+44.0$ \\
+ResNet, hand crops, fine-tuned $-$ ResNet, whole frame, fine-tuned & $+16.0$ & $+9.0$ to $+23.3$ \\
+Keypoint transformer, hands (matched) $-$ Keypoint transformer, no wrist location & $+2.0$ & $-3.0$ to $+7.0$ \\
+Keypoint transformer, tracked full-resolution $-$ Keypoint transformer, hands (matched) & $+8.0$ & $+2.0$ to $+14.3$ \\
+Keypoint transformer, no depth $-$ Keypoint transformer, hands (matched) & $+3.3$ & $-1.0$ to $+7.7$ \\
+Keypoint transformer, hands (matched) $-$ I3D, whole frame, fine-tuned & $+32.7$ & $+22.3$ to $+43.0$ \\
+Keypoint transformer, hands + upper body $-$ ResNet, hand crops + wrist location, fine-tuned & $+23.3$ & $+15.3$ to $+31.3$ \\
+ResNet, hand crops (black if missed), frozen $-$ ResNet, whole frame, frozen & $+8.3$ & $-0.7$ to $+17.3$ \\
+ResNet, hand crops (black if missed), frozen $-$ ResNet, hand crops (borrowed box), frozen & $+8.3$ & $+2.0$ to $+15.0$ \\
+ResNet, whole frame, fine-tuned $-$ ResNet, whole frame, frozen & $+8.7$ & $+2.0$ to $+15.3$ \\
+ResNet, hand crops, fine-tuned $-$ ResNet, hand crops (borrowed box), frozen & $+24.7$ & $+17.0$ to $+32.3$ \\

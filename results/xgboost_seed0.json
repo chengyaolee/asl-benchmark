@@ -1,0 +1,17 @@
+{
+  "model": "xgboost",
+  "tag": "seed0",
+  "val_top1": 0.3939393939393939,
+  "test_top1": 0.43,
+  "test_top5": 0.7,
+  "train_seconds": 39.34,
+  "latency_ms_per_clip": 0.128,
+  "n_train": 748,
+  "n_val": 165,
+  "n_test": 100,
+  "config": {
+    "tag": "seed0",
+    "seed": 0,
+    "augment": true
+  }
+}

@@ -125,7 +125,8 @@ class AblationTransformer(nn.Module):
         return self.head(pooled)
 
 
-def run_tf_rung(name, raw, labels, *, location: bool, augment: bool, num_layers: int, readout: str, T: int = 32):
+def run_tf_rung(name, raw, labels, *, location: bool, augment: bool, num_layers: int, readout: str, T: int = 32,
+                shuffle_test: int = 0):
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def seq_fn(clip):
@@ -143,7 +144,7 @@ def run_tf_rung(name, raw, labels, *, location: bool, augment: bool, num_layers:
     va_y = np.asarray(labels["val"], np.int64)
     te_y = np.asarray(labels["test"], np.int64)
 
-    val_accs, test_accs, top5_accs, times, preds = [], [], [], [], []
+    val_accs, test_accs, top5_accs, times, preds, shuffled = [], [], [], [], [], []
     for seed in SEEDS:
         t0 = time.perf_counter()
         torch.manual_seed(seed)
@@ -191,6 +192,13 @@ def run_tf_rung(name, raw, labels, *, location: bool, augment: bool, num_layers:
         model.eval()
         with torch.inference_mode():
             te_logits = model(te_x).cpu().numpy()
+        if shuffle_test:        # frame-order check: the same trained model on test clips with the frames permuted
+            accs = []
+            for k in range(shuffle_test):
+                perm = np.random.default_rng(1234 + k).permutation(T)      # same permutations for every model
+                with torch.inference_mode():
+                    accs.append(float((model(te_x[:, perm]).cpu().numpy().argmax(1) == te_y).mean()))
+            shuffled.append(float(np.mean(accs)))
         val_accs.append(best_val)
         test_accs.append(float((te_logits.argmax(1) == te_y).mean()))
         top5_accs.append(cnn_mod._topk_accuracy(te_logits, te_y))
@@ -207,6 +215,9 @@ def run_tf_rung(name, raw, labels, *, location: bool, augment: bool, num_layers:
         "test_labels": te_y.tolist(),
         "test_preds": preds,          # one list per seed, for error analysis
     }
+    if shuffle_test:
+        res["shuffled_test_top1"] = round(float(np.mean(shuffled)) * 100, 1)
+        res["shuffled_test_by_seed"] = [round(x * 100, 1) for x in shuffled]
     print(
         f"[TF ] {name:<42} | Val: {res['val_top1']:5.1f}% | Test: {res['test_top1']:5.1f}% "
         f"(std {res['test_std']:4.1f}%) | Top-5: {res['test_top5']:5.1f}% | {res['train_s']:5.1f}s",
@@ -278,6 +289,13 @@ def run_cnn_rung(name, clips_dict, labels, *, use_bn: bool, augment: bool, pool:
                 break
         model.load_state_dict(best_state)
         te_logits = cnn_mod._logits(model, te_x, dev)
+        if shuffle_test:        # frame-order check: the same trained model on test clips with the frames permuted
+            accs = []
+            for k in range(shuffle_test):
+                perm = np.random.default_rng(1234 + k).permutation(T)      # same permutations for every model
+                with torch.inference_mode():
+                    accs.append(float((model(te_x[:, perm]).cpu().numpy().argmax(1) == te_y).mean()))
+            shuffled.append(float(np.mean(accs)))
         val_accs.append(best_val)
         test_accs.append(float((te_logits.argmax(1) == te_y).mean()))
         top5_accs.append(cnn_mod._topk_accuracy(te_logits, te_y))

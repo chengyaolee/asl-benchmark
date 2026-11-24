@@ -1,0 +1,91 @@
+{
+ "transformer_wrong": 32,
+ "backbone_wrong": 69,
+ "both_wrong": 25,
+ "n_test": 100,
+ "transformer_pairs": [
+  [
+   "before",
+   "enjoy",
+   6
+  ],
+  [
+   "but",
+   "pizza",
+   3
+  ],
+  [
+   "candy",
+   "who",
+   3
+  ],
+  [
+   "corn",
+   "hearing",
+   3
+  ],
+  [
+   "give",
+   "dog",
+   3
+  ],
+  [
+   "kiss",
+   "apple",
+   3
+  ],
+  [
+   "last",
+   "before",
+   3
+  ],
+  [
+   "right",
+   "pull",
+   3
+  ]
+ ],
+ "backbone_pairs": [
+  [
+   "accident",
+   "wrong",
+   3
+  ],
+  [
+   "bowling",
+   "dog",
+   3
+  ],
+  [
+   "but",
+   "language",
+   3
+  ],
+  [
+   "candy",
+   "thursday",
+   3
+  ],
+  [
+   "color",
+   "secretary",
+   3
+  ],
+  [
+   "corn",
+   "accident",
+   3
+  ],
+  [
+   "study",
+   "dance",
+   3
+  ],
+  [
+   "bird",
+   "orange",
+   2
+  ]
+ ],
+ "backbone_rung": "5. Fine-tuned, hand crop, 16 frames (+aug)"
+}

@@ -1,0 +1,20 @@
+{
+  "model": "transformer",
+  "tag": "seed1",
+  "val_top1": 0.6787878787878788,
+  "test_top1": 0.69,
+  "test_top5": 0.88,
+  "train_seconds": 30.95,
+  "latency_ms_per_clip": 0.023,
+  "n_train": 748,
+  "n_val": 165,
+  "n_test": 100,
+  "config": {
+    "tag": "seed1",
+    "seed": 1,
+    "epochs": 200,
+    "T": 32,
+    "augment": true,
+    "location": true
+  }
+}

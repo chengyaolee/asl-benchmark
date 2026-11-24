@@ -70,6 +70,39 @@ def _hand_box(points: np.ndarray, width: int, height: int):
     return int(cx - side / 2), int(cy - side / 2), side
 
 
+def frame_indices(n_keypoint_rows: int, t: int = T) -> np.ndarray:
+    """The t frames every model sees for a clip, as rows of its MediaPipe keypoint file.
+
+    Keypoints were extracted from every frame of the video (scripts/extract.py, TRIM = False), so
+    row i is video frame i. The landmark loaders use the same rule on the same array, which makes
+    "the skeleton of frame i" and "the pixels of frame i" the same sample. The header frame count
+    over-reports the decodable frames by 1-3 on some clips, so it is never used here.
+    """
+    return np.linspace(0, n_keypoint_rows - 1, t).round().astype(np.int64)
+
+
+def _decode(video_path, wanted: np.ndarray):
+    """BGR frames at the sorted indices `wanted` (the last readable frame stands in past the end),
+    plus the frame width and height."""
+    import cv2
+
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        frames, pos, last = [], 0, None
+        for index in wanted:
+            while pos <= index:
+                ok, frame = cap.read()
+                pos += 1
+                if not ok:
+                    break
+                last = frame
+            frames.append(last)
+        return frames, w, h
+    finally:
+        cap.release()
+
+
 def read_hands(job):
     """(T, 2, SIZE, SIZE, 3) uint8 patches (signer's left, right) and (T, 2) missing flags.
 
@@ -78,74 +111,86 @@ def read_hands(job):
     """
     import cv2
 
-    video_path, frame_start, frame_end, kp_path = job
+    video_path, kp_path = job
     kp = np.load(kp_path)                                   # (frames, 42, 3)
     seen = ~np.isnan(kp[..., :2]).any(-1)                   # (frames, 42)
     detected = [np.flatnonzero(seen[:, h * 21 : (h + 1) * 21].all(1)) for h in (0, 1)]
-    cap = cv2.VideoCapture(str(video_path))
-    try:
-        count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        start, end = frame_span(count, frame_start, frame_end)
-        wanted = np.linspace(start, end - 1, T).round().astype(np.int64)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(start))
-        pos, last = start, None
-        patches = np.zeros((T, 2, SIZE, SIZE, 3), np.uint8)
-        missing = np.ones((T, 2), np.float32)
-        for t, index in enumerate(wanted):
-            while pos <= index:
-                ok, frame = cap.read()
-                pos += 1
-                if ok:
-                    last = frame
-                else:
-                    break
-            if last is None:
+    wanted = frame_indices(len(kp))
+    frames, w, h = _decode(video_path, wanted)
+    patches = np.zeros((T, 2, SIZE, SIZE, 3), np.uint8)
+    missing = np.ones((T, 2), np.float32)
+    for t, (row, frame) in enumerate(zip(wanted, frames)):
+        if frame is None:
+            continue
+        for hand in (0, 1):
+            rows = detected[hand]
+            if len(rows) == 0:
                 continue
-            row = min(int(index), len(kp) - 1)
-            for hand in (0, 1):
-                rows = detected[hand]
-                if len(rows) == 0:
-                    continue
-                nearest = rows[np.abs(rows - row).argmin()]
-                missing[t, hand] = float(nearest != row)
-                box = _hand_box(kp[nearest, hand * 21 : (hand + 1) * 21, :2], w, h)
-                patches[t, hand] = cv2.cvtColor(vb._square(last, box), cv2.COLOR_BGR2RGB)
-        return patches, missing
-    finally:
-        cap.release()
+            nearest = rows[np.abs(rows - row).argmin()]
+            missing[t, hand] = float(nearest != row)
+            box = _hand_box(kp[nearest, hand * 21 : (hand + 1) * 21, :2], w, h)
+            patches[t, hand] = cv2.cvtColor(vb._square(frame, box), cv2.COLOR_BGR2RGB)
+    return patches, missing
+
+
+def read_full(job):
+    """(T, SIZE, SIZE, 3) uint8 letterboxed full frames at the same indices as read_hands."""
+    import cv2
+
+    video_path, kp_path = job
+    wanted = frame_indices(len(np.load(kp_path)))
+    frames, w, h = _decode(video_path, wanted)
+    side = max(w, h)
+    box = ((w - side) // 2, (h - side) // 2, side)
+    blank = np.zeros((SIZE, SIZE, 3), np.uint8)
+    return np.stack([blank if f is None else cv2.cvtColor(vb._square(f, box), cv2.COLOR_BGR2RGB) for f in frames])
+
+
+def _samples():
+    """Clips that have a keypoint file, in one fixed order shared by every stream and split."""
+    return [s for s in vb.load("wlasl100", ROOT / "data", download=False).samples
+            if (vb.KP_DIR / f"{s.sample_id}.npy").exists()]
+
+
+def _by_split(samples, *arrays):
+    out = {}
+    for name in ("train", "val", "test"):
+        idx = [i for i, s in enumerate(samples) if s.split == name]
+        out[name] = tuple(a[idx] for a in arrays) + (np.array([samples[i].label for i in idx], np.int64),)
+    return out
+
+
+def _cached(name: str, reader, samples, keys: tuple[str, ...]):
+    """Decode every clip with `reader` (frames chosen by frame_indices) once, then reuse the npz."""
+    path = vb.CACHE / f"{name}_kp{T}x{SIZE}.npz"
+    if path.exists():
+        z = np.load(path)
+        return [z[k] for k in keys]
+    jobs = [(s.video_path, vb.KP_DIR / f"{s.sample_id}.npy") for s in samples]
+    t0 = time.perf_counter()
+    with Pool(6) as pool:
+        out = pool.map(reader, jobs, chunksize=8)
+    arrays = [np.stack([o[i] for o in out]) if len(keys) > 1 else np.stack(out) for i in range(len(keys))]
+    np.savez(path, **dict(zip(keys, arrays)))
+    print(f"decoded {name} -> {path.name} in {time.perf_counter() - t0:.0f}s", flush=True)
+    return arrays
 
 
 def load_hands():
-    """Hand patches and flags in the same sample order as vb.load_split_clips. Cached."""
-    path = vb.CACHE / f"hands_{T}x2x{SIZE}.npz"
-    samples = [s for s in vb.load("wlasl100", ROOT / "data", download=False).samples
-               if (vb.KP_DIR / f"{s.sample_id}.npy").exists()]
-    if path.exists():
-        z = np.load(path)
-        patches, missing = z["patches"], z["missing"]
-    else:
-        jobs = [(s.video_path, s.frame_start, s.frame_end, vb.KP_DIR / f"{s.sample_id}.npy") for s in samples]
-        t0 = time.perf_counter()
-        with Pool(6) as pool:
-            out = pool.map(read_hands, jobs, chunksize=8)
-        patches = np.stack([p for p, _ in out])
-        missing = np.stack([m for _, m in out])
-        np.savez(path, patches=patches, missing=missing)
-        print(f"decoded hand patches -> {path.name} in {time.perf_counter() - t0:.0f}s", flush=True)
-    split = {}
-    for name in ("train", "val", "test"):
-        idx = [i for i, s in enumerate(samples) if s.split == name]
-        split[name] = (patches[idx], missing[idx], np.array([samples[i].label for i in idx], np.int64))
-    return split
+    """Per split: (patches (n, T, 2, S, S, 3), missing flags (n, T, 2), labels)."""
+    samples = _samples()
+    patches, missing = _cached("hands", read_hands, samples, ("patches", "missing"))
+    return _by_split(samples, patches, missing)
 
 
 def load_inputs(kind: str):
     """Per split: (images (n, T, S, H, W, 3) uint8, flags (n, T, F), labels). S = 1 or 2 streams."""
     if kind == "hands":
         return load_hands()
-    data = vb.load_split_clips(T, crop=False)
-    return {k: (x[:, :, None], np.zeros((len(x), T, 0), np.float32), y) for k, (x, y, _) in data.items()}
+    samples = _samples()
+    (frames,) = _cached("full", read_full, samples, ("frames",))
+    data = _by_split(samples, frames)
+    return {k: (x[:, :, None], np.zeros((len(x), T, 0), np.float32), y) for k, (x, y) in data.items()}
 
 
 # ------------------------------------------------------------------------ model
@@ -209,21 +254,29 @@ def predict(model, images, flags, dev, batch: int = 16) -> np.ndarray:
 
 
 # --------------------------------------------------------------------- training
-def augment(images: np.ndarray, flags: np.ndarray, rng: np.random.Generator):
-    """One shared temporal crop, then one random affine per stream (as the landmark augmentation)."""
+def augment(images: np.ndarray, flags: np.ndarray, rng: np.random.Generator, *,
+            crop: float = 0.1, rotate: float = 15.0, scale: float = 0.1, shift: float = 0.05, jitter: float = 0.0):
+    """One shared temporal crop, then one random affine per stream (as the landmark augmentation).
+
+    The defaults are the augmentation every earlier run used. `jitter` > 0 adds one brightness and contrast change per
+    clip (used only by scripts/tune_picture.py)."""
     import cv2
 
     t = len(images)
-    start = int(rng.integers(0, int(t * 0.1) + 1))
-    end = t - int(rng.integers(0, int(t * 0.1) + 1))
+    start = int(rng.integers(0, int(t * crop) + 1))
+    end = t - int(rng.integers(0, int(t * crop) + 1))
     idx = np.linspace(start, end - 1, t).round().astype(np.int64)
     images, flags = images[idx].astype(np.float32) / 255.0, flags[idx]
     out = np.empty_like(images)
+    size = images.shape[-2]                   # 112 for patches, 224 for the matched full frames
     for s in range(images.shape[1]):
-        m = cv2.getRotationMatrix2D((SIZE / 2, SIZE / 2), float(rng.uniform(-15, 15)), float(rng.uniform(0.9, 1.1)))
-        m[:, 2] += rng.uniform(-0.05, 0.05, size=2) * SIZE
+        m = cv2.getRotationMatrix2D((size / 2, size / 2), float(rng.uniform(-rotate, rotate)),
+                                    float(rng.uniform(1 - scale, 1 + scale)))
+        m[:, 2] += rng.uniform(-shift, shift, size=2) * size
         for f in range(t):
-            out[f, s] = cv2.warpAffine(images[f, s], m, (SIZE, SIZE), borderMode=cv2.BORDER_REFLECT_101)
+            out[f, s] = cv2.warpAffine(images[f, s], m, (size, size), borderMode=cv2.BORDER_REFLECT_101)
+    if jitter > 0:
+        out = (out - 0.5) * float(rng.uniform(1 - jitter, 1 + jitter)) + 0.5 + float(rng.uniform(-jitter / 2, jitter / 2))
     out += rng.normal(0, 0.003, out.shape).astype(np.float32)
     return np.clip(out, 0, 1), flags
 
@@ -317,8 +370,9 @@ def _latency(fn, dev) -> float:
     return (time.perf_counter() - t0) * 1000 / n
 
 
-def run_rung(number, seeds, dev) -> dict:
-    cfg = RUNGS[number]
+def run_rung(number, seeds, dev, cfg=None, data=None) -> dict:
+    """`cfg` and `data` let scripts/matched.py reuse this loop with its own inputs."""
+    cfg = cfg or RUNGS[number]
     if cfg["kind"] == "landmarks":
         import scripts.run_ablations as ablations
 
@@ -328,7 +382,7 @@ def run_rung(number, seeds, dev) -> dict:
                           readout="mean", T=T)
         row["params"] = sum(p.numel() for p in head(132).parameters())
         return row
-    data = load_inputs(cfg["kind"])
+    data = data or load_inputs(cfg["kind"])
     (tr_x, tr_f, tr_y), (va_x, va_f, va_y), (te_x, te_f, te_y) = data["train"], data["val"], data["test"]
     vals, tests, top5s, secs, lats, preds = [], [], [], [], [], []
     params = 0

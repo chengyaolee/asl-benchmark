@@ -222,3 +222,6 @@ __marimo__/
 # Fetched WLASL100 / Google ISLR files
 /data/
 /results
+# 50 MB Kinetics weights for I3D: fetch with scripts/fetch_i3d.sh
+third_party/pytorch_i3d/rgb_imagenet.pt
+

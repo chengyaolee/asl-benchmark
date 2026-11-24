@@ -1,0 +1,147 @@
+{
+ "n_clips": 99,
+ "hardware": {
+  "cpu": "unknown",
+  "gpu": "NVIDIA GeForce RTX 3060",
+  "torch_threads": 6
+ },
+ "pipelines": {
+  "skeleton_static": {
+   "rungs": [
+    "S1",
+    "S1x",
+    "C5",
+    "X3"
+   ],
+   "ms_mean": 624.3,
+   "ms_median": 597.2,
+   "ms_p95": 831.5,
+   "stages_mean": {
+    "decode": 81.8,
+    "mp_static": 541.27,
+    "skeleton_head": 1.27
+   }
+  },
+  "skeleton_body": {
+   "rungs": [
+    "X2"
+   ],
+   "ms_mean": 1355.6,
+   "ms_median": 1320.4,
+   "ms_p95": 1566.7,
+   "stages_mean": {
+    "decode": 81.8,
+    "mp_static": 541.27,
+    "mp_pose": 731.22,
+    "skeleton_head": 1.27
+   }
+  },
+  "skeleton_tracked": {
+   "rungs": [
+    "C1"
+   ],
+   "ms_mean": 2123.0,
+   "ms_median": 2077.2,
+   "ms_p95": 3237.0,
+   "stages_mean": {
+    "mp_tracked": 2122.2,
+    "skeleton_head_tracked": 0.84
+   }
+  },
+  "image_full": {
+   "rungs": [
+    "S2",
+    "S3"
+   ],
+   "ms_mean": 102.3,
+   "ms_median": 71.5,
+   "ms_p95": 251.9,
+   "stages_mean": {
+    "decode": 81.8,
+    "net_full": 20.47
+   }
+  },
+  "image_patches": {
+   "rungs": [
+    "S4",
+    "S5",
+    "C3",
+    "X1"
+   ],
+   "ms_mean": 634.7,
+   "ms_median": 608.9,
+   "ms_p95": 841.8,
+   "stages_mean": {
+    "decode": 81.8,
+    "mp_static": 541.27,
+    "crop": 1.14,
+    "net_patches": 10.49
+   }
+  },
+  "skeleton_image": {
+   "rungs": [
+    "C2a",
+    "C2b"
+   ],
+   "ms_mean": 630.4,
+   "ms_median": 605.7,
+   "ms_p95": 838.5,
+   "stages_mean": {
+    "decode": 81.8,
+    "mp_static": 541.27,
+    "render": 1.21,
+    "net_skeleton_image": 6.08
+   }
+  },
+  "fusion": {
+   "rungs": [
+    "C4"
+   ],
+   "ms_mean": 635.1,
+   "ms_median": 608.0,
+   "ms_p95": 842.3,
+   "stages_mean": {
+    "decode": 81.8,
+    "mp_static": 541.27,
+    "crop": 1.14,
+    "features": 0.1,
+    "net_fusion": 10.77
+   }
+  },
+  "i3d_full": {
+   "rungs": [
+    "I3D"
+   ],
+   "ms_mean": 100.8,
+   "ms_median": 70.9,
+   "ms_p95": 250.4,
+   "stages_mean": {
+    "decode": 81.8,
+    "net_i3d": 19.05
+   }
+  },
+  "tgcn_static": {
+   "rungs": [
+    "TGCN"
+   ],
+   "ms_mean": 625.1,
+   "ms_median": 597.9,
+   "ms_p95": 832.3,
+   "stages_mean": {
+    "decode": 81.8,
+    "mp_static": 541.27,
+    "tgcn_static": 2.01
+   }
+  },
+  "tgcn_tracked": {
+   "rungs": [],
+   "ms_mean": 2123.9,
+   "ms_median": 2078.1,
+   "ms_p95": 3237.8,
+   "stages_mean": {
+    "mp_tracked": 2122.2,
+    "tgcn_tracked": 1.7
+   }
+  }
+ }
+}

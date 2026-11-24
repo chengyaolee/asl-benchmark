@@ -1,0 +1,18 @@
+{
+  "model": "cnn",
+  "tag": "seed1",
+  "val_top1": 0.030303030303030304,
+  "test_top1": 0.01,
+  "test_top5": 0.04,
+  "train_seconds": 93.58,
+  "latency_ms_per_clip": 0.343,
+  "n_train": 748,
+  "n_val": 165,
+  "n_test": 100,
+  "config": {
+    "tag": "seed1",
+    "seed": 1,
+    "epochs": 50,
+    "augment": true
+  }
+}
