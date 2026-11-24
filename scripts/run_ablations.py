@@ -125,9 +125,8 @@ class AblationTransformer(nn.Module):
         return self.head(pooled)
 
 
-def run_tf_rung(name, raw, labels, *, location: bool, augment: bool, num_layers: int, readout: str):
+def run_tf_rung(name, raw, labels, *, location: bool, augment: bool, num_layers: int, readout: str, T: int = 32):
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    T = 32
 
     def seq_fn(clip):
         feat = per_frame(hand_landmarks.hands(clip), location=location)

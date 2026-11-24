@@ -51,6 +51,7 @@ FEAT_BATCH = 32
 FT_EPOCHS, FT_PATIENCE = 30, 6
 HEAD_EPOCHS, HEAD_PATIENCE = 300, 30
 LR_BACKBONE, LR_HEAD, WD = 1e-4, 1e-3, 1e-2
+COSINE = False           # cosine LR decay over FT_EPOCHS (set by --cosine)
 SMOOTHING = 0.1
 KP_DIR = ROOT / "data/wlasl100/keypoints"
 CACHE = ROOT / "data/wlasl100/cache"
@@ -260,6 +261,7 @@ def fine_tune(train, val, seed: int, dev, augment: bool = True) -> nn.Module:
         {"params": model.head.parameters(), "lr": LR_HEAD},
     ], weight_decay=WD)
     scaler = torch.amp.GradScaler(enabled=dev.type == "cuda")
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=FT_EPOCHS) if COSINE else None
     clips, y = train[0], torch.from_numpy(train[1])
     best, best_epoch, state = -1.0, 0, None
     for epoch in range(FT_EPOCHS):
@@ -277,7 +279,9 @@ def fine_tune(train, val, seed: int, dev, augment: bool = True) -> nn.Module:
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(opt)
             scaler.update()
-        acc = float((predict(model, val[0], dev).argmax(1) == val[1]).mean())
+        if sched is not None:
+            sched.step()
+        acc =float((predict(model, val[0], dev).argmax(1) == val[1]).mean())
         print(f"    epoch {epoch:2d}  loss {loss.item():.3f}  val {acc * 100:5.1f}%", flush=True)
         if acc > best:
             best, best_epoch = acc, epoch
@@ -347,11 +351,22 @@ def run_rung(number: int, seeds, dev) -> dict:
 
 
 def main(argv=None) -> None:
+    global FT_EPOCHS, FT_PATIENCE, LR_BACKBONE, COSINE
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--rungs", type=int, nargs="+", default=sorted(RUNGS))
     p.add_argument("--seeds", type=int, nargs="+", default=list(SEEDS))
     p.add_argument("--out", default="results/backbone_ablations.json")
+    p.add_argument("--epochs", type=int, default=FT_EPOCHS, help="fine-tuning epoch cap")
+    p.add_argument("--patience", type=int, default=FT_PATIENCE)
+    p.add_argument("--lr-backbone", type=float, default=LR_BACKBONE)
+    p.add_argument("--cosine", action="store_true", help="cosine LR decay over --epochs")
+    p.add_argument("--tag", default="", help="suffix for rung names, e.g. ' [60ep]'")
     args = p.parse_args(argv)
+    FT_EPOCHS, FT_PATIENCE, LR_BACKBONE, COSINE = args.epochs, args.patience, args.lr_backbone, args.cosine
+    if args.tag:
+        for cfg in RUNGS.values():
+            cfg["name"] += args.tag
+    torch.backends.cudnn.benchmark = True
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {torch.cuda.get_device_name(0) if dev.type == 'cuda' else 'cpu'}", flush=True)
     out_path = ROOT / args.out
