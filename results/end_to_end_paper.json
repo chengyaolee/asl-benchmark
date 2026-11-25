@@ -1,0 +1,71 @@
+{
+ "n_clips": 99,
+ "gpu": "NVIDIA GeForce RTX 3060",
+ "trees_kept": 300,
+ "params": {
+  "transformer": 166756,
+  "r2plus1d_center": 31351425,
+  "resnet_full": 11389860,
+  "resnet_hands": 11455652,
+  "convnet": 106596
+ },
+ "pipelines": {
+  "trees": {
+   "ms_mean": 2129.5,
+   "ms_median": 2084.1,
+   "ms_p95": 3236.9,
+   "stages_mean": {
+    "mp_tracked": 2122.3,
+    "features_trees": 0.3,
+    "predict_trees": 6.9
+   }
+  },
+  "transformer": {
+   "ms_mean": 2123.8,
+   "ms_median": 2078.0,
+   "ms_p95": 3232.2,
+   "stages_mean": {
+    "mp_tracked": 2122.3,
+    "features_tf": 0.4,
+    "net_tf": 1.1
+   }
+  },
+  "r2plus1d_center": {
+   "ms_mean": 91.4,
+   "ms_median": 69.8,
+   "ms_p95": 208.7,
+   "stages_mean": {
+    "decode_center32": 66.5,
+    "net_r2plus1d": 24.9
+   }
+  },
+  "resnet_full": {
+   "ms_mean": 81.1,
+   "ms_median": 51.0,
+   "ms_p95": 226.1,
+   "stages_mean": {
+    "decode_full16": 74.7,
+    "net_resnet_full": 6.4
+   }
+  },
+  "resnet_hands": {
+   "ms_mean": 2165.2,
+   "ms_median": 2097.2,
+   "ms_p95": 3268.0,
+   "stages_mean": {
+    "mp_tracked": 2122.3,
+    "decode_hands16": 32.4,
+    "net_resnet_hands": 10.5
+   }
+  },
+  "convnet": {
+   "ms_mean": 32.3,
+   "ms_median": 25.0,
+   "ms_p95": 74.5,
+   "stages_mean": {
+    "decode_conv16": 31.4,
+    "net_convnet": 0.9
+   }
+  }
+ }
+}
